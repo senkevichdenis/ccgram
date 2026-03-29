@@ -23,6 +23,9 @@ def get_thread_id(update: Update) -> int | None:
     if msg is None:
         return None
     tid = getattr(msg, "message_thread_id", None)
-    if tid is None or tid == 1:
+    if tid is None:
+        is_forum = getattr(msg.chat, "is_forum", False) if msg.chat else False
+        if is_forum:
+            return 1
         return None
     return tid

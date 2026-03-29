@@ -1049,6 +1049,13 @@ class TmuxManager:
                 if start_agent and launch_command:
                     pane = window.active_pane
                     if pane:
+                        import os as _os
+                        for _var in ('CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD'):
+                            _val = _os.environ.get(_var)
+                            if _val:
+                                pane.send_keys(f'export {_var}={_val}', enter=True)
+                        pane.send_keys('export PATH=$HOME/.local/bin:$PATH', enter=True)
+                        import time; time.sleep(0.5)
                         cmd = launch_command
                         if agent_args:
                             cmd = f"{cmd} {agent_args}"

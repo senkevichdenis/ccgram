@@ -474,15 +474,8 @@ async def _transition_to_idle(
     await update_topic_emoji(bot, chat_id, thread_id, "idle", display)
     _clear_autoclose_if_active(user_id, thread_id)
     _get_topic_state(user_id, thread_id).last_typing_sent = None
-    if notif_mode not in ("muted", "errors_only"):
-        from .callback_data import IDLE_STATUS_TEXT
-
-        await enqueue_status_update(
-            bot, user_id, window_id, IDLE_STATUS_TEXT, thread_id=thread_id
-        )
-    else:
-        # Muted windows: clear any lingering status message
-        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+    # BRAIN FORK: don't show Ready, just clear status
+    await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
 
 
 async def _handle_no_status(

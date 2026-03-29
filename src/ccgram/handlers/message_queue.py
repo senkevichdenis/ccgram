@@ -111,8 +111,10 @@ def format_batch_message(
 
 def build_status_keyboard(
     window_id: str, history: list[str] | None = None
-) -> InlineKeyboardMarkup:
+) -> InlineKeyboardMarkup | None:
     """Build inline keyboard for status messages: [↑ cmd] row + [Esc] [Screenshot] [Bell] [RC]."""
+    # BRAIN FORK: disabled status keyboard (history, esc, screenshot buttons)
+    return None
     from .command_history import truncate_for_display
     from .status_polling import is_rc_active
 
@@ -577,7 +579,7 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
 
 def _send_kwargs(thread_id: int | None) -> dict[str, int]:
     """Build message_thread_id kwargs for bot.send_message()."""
-    if thread_id is not None:
+    if thread_id is not None and thread_id != 1:
         return {"message_thread_id": thread_id}
     return {}
 

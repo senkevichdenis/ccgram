@@ -250,6 +250,9 @@ async def handle_interactive_ui(
     multi-pane windows such as agent teams).  The pane context is shown
     in the message and the keyboard routes responses to that pane.
     """
+    # BRAIN FORK: disabled interactive keyboard UI (Space/arrows/Enter)
+    # In YOLO mode, permissions are auto-approved so this is not needed
+    return False
     captured = await _capture_interactive_content(window_id, pane_id=pane_id)
     if not captured:
         return False

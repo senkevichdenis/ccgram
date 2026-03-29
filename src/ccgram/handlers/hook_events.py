@@ -128,9 +128,8 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
         display = session_manager.get_display_name(window_id)
         await update_topic_emoji(bot, chat_id, thread_id, "idle", display)
         notif_mode = session_manager.get_notification_mode(window_id)
-        status_text = (
-            None if notif_mode in ("muted", "errors_only") else IDLE_STATUS_TEXT
-        )
+        # BRAIN FORK: don't show Ready status, just clear it
+        status_text = None
         await enqueue_status_update(
             bot, user_id, window_id, status_text, thread_id=thread_id
         )

@@ -1567,6 +1567,8 @@ async def _handle_new_window(event: NewWindowEvent, bot: Bot) -> None:
     Skips if the window is already bound to a topic. Creates one topic per
     unique group chat, binds all users in that chat.
     """
+    # BRAIN FORK: disabled auto-topic creation to keep topics clean
+    return
 
     # Check if this window is already bound to any topic
     for _, _, bound_wid in session_manager.iter_thread_bindings():

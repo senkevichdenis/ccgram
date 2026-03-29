@@ -195,13 +195,8 @@ async def _handle_bind(
     )
 
     try:
-        await context.bot.edit_forum_topic(
-            chat_id=session_manager.resolve_chat_id(user_id, thread_id),
-            message_thread_id=thread_id,
-            name=format_topic_name_for_mode(
-                display, session_manager.get_approval_mode(selected_wid)
-            ),
-        )
+        # BRAIN FORK: disabled topic rename
+        pass  # no-op
     except TelegramError as e:
         logger.debug("Failed to rename topic: %s", e)
 

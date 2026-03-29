@@ -552,11 +552,13 @@ async def _create_window_and_bind(
         session_manager.set_group_chat_id(user_id, pending_thread_id, chat.id)
 
     try:
-        await context.bot.edit_forum_topic(
-            chat_id=session_manager.resolve_chat_id(user_id, pending_thread_id),
-            message_thread_id=pending_thread_id,
-            name=format_topic_name_for_mode(created_wname, approval_mode),
-        )
+        # BRAIN FORK: disabled topic rename
+        pass  # no-op
+#         await context.bot.edit_forum_topic(
+#             chat_id=session_manager.resolve_chat_id(user_id, pending_thread_id),
+#             message_thread_id=pending_thread_id,
+#             name=format_topic_name_for_mode(created_wname, approval_mode),
+#         )
     except TelegramError as e:
         logger.debug("Failed to rename topic: %s", e)
 

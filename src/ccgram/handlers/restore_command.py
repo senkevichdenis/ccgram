@@ -88,11 +88,13 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         session_manager.set_group_chat_id(user_id, thread_id, update.message.chat.id)
 
     with contextlib.suppress(TelegramError):
-        await context.bot.edit_forum_topic(
-            chat_id=session_manager.resolve_chat_id(user_id, thread_id),
-            message_thread_id=thread_id,
-            name=format_topic_name_for_mode(wname, approval_mode),
-        )
+        # BRAIN FORK: disabled topic rename
+        pass  # no-op
+#         await context.bot.edit_forum_topic(
+#             chat_id=session_manager.resolve_chat_id(user_id, thread_id),
+#             message_thread_id=thread_id,
+#             name=format_topic_name_for_mode(wname, approval_mode),
+#         )
 
     await safe_reply(
         update.message, f"\u2705 {message}\n\nContinuing previous session."

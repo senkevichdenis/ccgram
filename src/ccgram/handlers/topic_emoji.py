@@ -81,9 +81,7 @@ def _resolve_topic_name(key: tuple[int, int], display_name: str) -> str:
         _topic_names[key] = clean
         return clean
     if cached != clean:
-        _topic_names[key] = clean
-        # Invalidate state so next update_topic_emoji re-applies emoji with new name
-        _topic_states.pop(key, None)
+        pass  # BRAIN FORK: keep original Telegram topic name, don't overwrite from tmux
     return _topic_names[key]
 
 
@@ -124,6 +122,8 @@ async def update_topic_emoji(
     state: str,
     display_name: str,
 ) -> None:
+    # BRAIN FORK: disabled topic emoji/rename to keep clean topics
+    return
     """Update topic name with emoji prefix reflecting session state.
 
     Debounces transitions: the new state must be requested consistently for

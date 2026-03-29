@@ -29,7 +29,7 @@ logger = structlog.get_logger()
 _APPROVAL_MODE_NORMAL = "normal"
 _APPROVAL_MODE_YOLO = "yolo"
 _YOLO_FLAGS: dict[str, str] = {
-    "claude": "--dangerously-skip-permissions",
+    "claude": "",
     "codex": "--dangerously-bypass-approvals-and-sandbox",
     "gemini": "--yolo",
 }
