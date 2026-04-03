@@ -593,6 +593,12 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
     thread_id = task.thread_id or 0
     chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
 
+    # BRAIN FORK: status tools (listening..., watching...) -> temp status message
+    if task.parts and task.parts[0].startswith("__STATUS__"):
+        status_label = task.parts[0][len("__STATUS__"):]
+        await _do_send_status_message(bot, user_id, thread_id, window_id, status_label)
+        return
+
     # 1. Handle tool_result editing (merged parts are edited together)
     if task.content_type == "tool_result" and task.tool_use_id:
         _tkey = (task.tool_use_id, user_id, thread_id)
