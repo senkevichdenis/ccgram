@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ccgram.providers.base import EXPANDABLE_QUOTE_START, format_expandable_quote
+from ccgram.config import config as _tp_config
 
 
 @dataclass
@@ -180,6 +181,94 @@ class TranscriptParser:
             result_lines.append(line.rstrip("\n"))
         return "\n".join(result_lines)
 
+    # --- MCP tool descriptions (BRAIN FORK) ---
+
+    _tool_descriptions_cache: dict | None = None
+
+    @classmethod
+    def _load_tool_descriptions(cls) -> dict:
+        """Load tool_descriptions.json (cached)."""
+        if cls._tool_descriptions_cache is not None:
+            return cls._tool_descriptions_cache
+        import json as _json
+        try:
+            if _tp_config.tool_descriptions_file.exists():
+                with open(_tp_config.tool_descriptions_file) as f:
+                    cls._tool_descriptions_cache = _json.load(f)
+            else:
+                cls._tool_descriptions_cache = {}
+        except (ValueError, OSError):
+            cls._tool_descriptions_cache = {}
+        return cls._tool_descriptions_cache
+
+    @classmethod
+    def _parse_sql_summary(cls, query: str, verbs: dict) -> str:
+        """Extract human-readable summary from SQL query."""
+        q = query.strip().upper()
+        for verb in sorted(verbs.keys(), key=len, reverse=True):
+            if q.startswith(verb):
+                label = verbs[verb]
+                table_match = re.search(
+                    r'(?:FROM|INTO|TABLE|UPDATE|TRUNCATE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?([\w."]+)',
+                    query, re.IGNORECASE
+                )
+                table = ""
+                if table_match:
+                    table = table_match.group(1).strip('"').strip("'")
+                if table:
+                    return f"{label} {table}"
+                return label
+        return query[:40] + "..." if len(query) > 40 else query
+
+    @classmethod
+    def _format_mcp_tool(cls, name: str, input_data: dict | Any) -> str:
+        """Format MCP tool call into human-readable summary."""
+        descriptions = cls._load_tool_descriptions()
+
+        parts = name.split("__")
+        if len(parts) >= 3:
+            server = parts[1]
+            tool = "__".join(parts[2:])
+        else:
+            server = name
+            tool = ""
+
+        desc = descriptions.get(name)
+
+        if desc is None:
+            summary = ""
+            if isinstance(input_data, dict):
+                for v in input_data.values():
+                    if isinstance(v, str) and v:
+                        summary = v[:40] + ("..." if len(v) > 40 else "")
+                        break
+            if summary:
+                return f"mcp {server}: {tool} -- {summary}"
+            return f"mcp {server}: {tool}"
+
+        if desc.get("parse") == "sql" and isinstance(input_data, dict):
+            query = input_data.get("query", "")
+            if query:
+                verbs = desc.get("verbs", {})
+                sql_summary = cls._parse_sql_summary(query, verbs)
+                return f"mcp {server}: {sql_summary}"
+            return f"mcp {server}: execute_sql"
+
+        label = desc.get("label", tool)
+        param_name = desc.get("param")
+
+        if param_name and isinstance(input_data, dict):
+            param_value = input_data.get(param_name, "")
+            if param_value:
+                param_value = str(param_value)
+                if desc.get("shorten") and len(param_value) > 20:
+                    param_value = param_value[:17] + "..."
+                elif len(param_value) > 50:
+                    param_value = param_value[:47] + "..."
+                return f'mcp {server}: {label} "{param_value}"'
+
+        return f"mcp {server}: {label}"
+
     @classmethod
     def format_tool_use_summary(
         cls, name: str, input_data: dict | Any, cwd: str | None = None
@@ -240,6 +329,8 @@ class TranscriptParser:
             summary = ""
         elif name == "Skill":
             summary = input_data.get("skill", "")
+        elif name.startswith("mcp__"):
+            return cls._format_mcp_tool(name, input_data)
         else:
             # Generic: show first string value
             for v in input_data.values():
