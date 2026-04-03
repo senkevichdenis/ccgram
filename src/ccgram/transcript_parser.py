@@ -328,8 +328,9 @@ class TranscriptParser:
             summary = input_data.get("command", "")
             # BRAIN FORK: parse bash command, hide internal commands
             if summary:
-                # Split by && and find first meaningful command
-                parts_cmd = [p.strip() for p in summary.split("&&")]
+                # Split by && and ; to find first meaningful command
+                import re as _re
+                parts_cmd = [p.strip() for p in _re.split(r"&&|;", summary)]
                 skip_prefixes = ("cd ", "export ", "source ", "set ", "unset ")
                 for part in parts_cmd:
                     if not any(part.startswith(sp) for sp in skip_prefixes):
