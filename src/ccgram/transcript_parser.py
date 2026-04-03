@@ -73,26 +73,11 @@ class TranscriptParser:
     _ERROR_SUMMARY_LIMIT = 100
     _MAX_SUMMARY_LENGTH = 200
 
-    # Tool name → emoji for visual category recognition in Telegram output
-    TOOL_EMOJI: dict[str, str] = {
-        "Read": "\U0001f4d6",
-        "Write": "\U0001f4dd",
-        "Edit": "\u270f\ufe0f",
-        "MultiEdit": "\u270f\ufe0f",
-        "NotebookEdit": "\u270f\ufe0f",
-        "Bash": "\u26a1",
-        "Grep": "\U0001f50d",
-        "Glob": "\U0001f4c2",
-        "Task": "\U0001f916",
-        "WebFetch": "\U0001f310",
-        "WebSearch": "\U0001f50e",
-        "TodoWrite": "\u2705",
-        "TodoRead": "\U0001f4cb",
-        "Skill": "\u2699\ufe0f",
-        "AskUserQuestion": "\u2753",
-        "ExitPlanMode": "\U0001f4cb",
-        "LS": "\U0001f4c2",
-    }
+    # BRAIN FORK: emoji removed for clean Telegram output
+    TOOL_EMOJI: dict[str, str] = {}
+
+    # BRAIN FORK: tools to hide from Telegram (internal, no user value)
+    HIDDEN_TOOLS: set[str] = {"ToolSearch"}
 
     @staticmethod
     def parse_line(line: str) -> dict | None:
@@ -281,8 +266,12 @@ class TranscriptParser:
             cwd: Optional working directory for shortening file paths
 
         Returns:
-            Formatted string like "**Read**(file.py)"
+            Formatted string like "Read file.py", or empty string for hidden tools.
         """
+        # BRAIN FORK: hide internal tools (ToolSearch etc.)
+        if name in cls.HIDDEN_TOOLS:
+            return ""
+
         from .utils import shorten_path
 
         if not isinstance(input_data, dict):

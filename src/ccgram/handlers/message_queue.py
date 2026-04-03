@@ -91,6 +91,8 @@ def format_batch_message(
     lines = []
     for entry in entries:
         line = entry.tool_use_text
+        if not line:  # BRAIN FORK: skip hidden tools (empty summary)
+            continue
         if entry.tool_result_text is not None:
             line = f"{line}\n  {entry.tool_result_text}"
         lines.append(line)
