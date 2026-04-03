@@ -59,10 +59,9 @@ def build_response_parts(
         elif len(text) > max_thinking:
             text = text[:max_thinking] + "\n\n\u2026 (thinking truncated)"
 
-    # Format based on content type
+    # BRAIN FORK: thinking shows as temp status message (no emoji, disappears)
     if content_type == "thinking":
-        prefix = "\U0001f9e0 Thinking\u2026"
-        separator = "\n"
+        return ["__STATUS__Thinking..."]
     else:
         # Plain text: no prefix
         prefix = ""

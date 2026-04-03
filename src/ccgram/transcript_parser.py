@@ -255,6 +255,8 @@ class TranscriptParser:
                     param_value = param_value[:17] + "..."
                 elif len(param_value) > 50:
                     param_value = param_value[:47] + "..."
+                if desc.get("no_quotes"):
+                    return f"mcp {server}: {label} {param_value}"
                 return f'mcp {server}: {label} "{param_value}"'
 
         return f"mcp {server}: {label}"
