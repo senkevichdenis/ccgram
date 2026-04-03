@@ -93,6 +93,9 @@ def format_batch_message(
         line = entry.tool_use_text
         if not line:  # BRAIN FORK: skip hidden tools (empty summary)
             continue
+        # BRAIN FORK: status tools (listening..., watching...) - strip prefix for display
+        if line.startswith("__STATUS__"):
+            line = line[len("__STATUS__"):]
         if entry.tool_result_text is not None:
             line = f"{line}\n  {entry.tool_result_text}"
         lines.append(line)
@@ -378,6 +381,15 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
             _active_batches[bkey] = batch
 
         entry_text = task.text or "\n".join(task.parts) or "tool call"
+
+        # BRAIN FORK: status tools (listening..., watching...) show as temp status message
+        if entry_text.startswith("__STATUS__"):
+            status_label = entry_text[len("__STATUS__"):]
+            await _do_send_status_message(
+                bot, user_id, thread_id, window_id, status_label
+            )
+            return
+
         entry = ToolBatchEntry(
             tool_use_id=task.tool_use_id,
             tool_use_text=entry_text,

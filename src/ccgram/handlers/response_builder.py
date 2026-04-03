@@ -38,6 +38,9 @@ def build_response_parts(
 
     # User messages: add emoji prefix (no newline)
     if role == "user":
+        # BRAIN FORK: hide upload notifications from chat (clean UX)
+        if "I've uploaded" in text or "I have uploaded" in text:
+            return []
         prefix = "\U0001f464 "
         if len(text) > _MAX_USER_MSG_LENGTH:
             text = text[:_MAX_USER_MSG_LENGTH] + "\u2026"

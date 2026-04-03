@@ -231,6 +231,11 @@ class TranscriptParser:
                 return f"mcp {server}: {tool} -- {summary}"
             return f"mcp {server}: {tool}"
 
+        # BRAIN FORK: status tools show as temporary status message (e.g. "listening...")
+        if desc.get("status"):
+            label = desc.get("label", tool)
+            return f"__STATUS__{label}"
+
         if desc.get("parse") == "sql" and isinstance(input_data, dict):
             query = input_data.get("query", "")
             if query:

@@ -214,7 +214,8 @@ async def _upload_and_notify(
     success, err = await session_manager.send_to_window(window_id, claude_msg)
     if success:
         await ack_reaction(message.get_bot(), message.chat.id, message.message_id)
-        await safe_reply(message, f"{success_emoji} Uploaded `{rel_path}`")
+        # BRAIN FORK: no upload notification in chat (clean UX)
+        await message.chat.send_action(ChatAction.TYPING)
     else:
         await safe_reply(
             message, f"\u274c File saved but failed to notify Claude: {err}"
