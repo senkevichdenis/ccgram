@@ -85,12 +85,25 @@ def format_batch_message(
 ) -> str:
     """Render a batch of tool calls as a single compact message.
 
-    Format:
-        ⚡ 3 tool calls [🤖 write-tests]
-        📖 Read  src/foo.py       ⎿  42 lines
-        ✏️ Edit  src/foo.py       ⎿  +3 −1
-        ⚡ Bash  make test        ⏳
+    MCP tools: clean format without emoji, header, or separators.
+    Built-in tools: original format with emoji and header.
+
+    BRAIN FORK: MCP tools get minimal formatting for Telegram readability.
     """
+    # Check if ALL entries are MCP tools
+    all_mcp = all(e.tool_use_text.startswith("mcp ") for e in entries)
+
+    if all_mcp:
+        # Clean MCP format: just lines, no header, no emoji, no separators
+        lines = []
+        for entry in entries:
+            line = entry.tool_use_text
+            if entry.tool_result_text is not None:
+                line = f"{line}\n  {entry.tool_result_text}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    # Original format for built-in tools (or mixed batches)
     count = len(entries)
     label = "tool call" if count == 1 else "tool calls"
     header = f"\u26a1 {count} {label}"
