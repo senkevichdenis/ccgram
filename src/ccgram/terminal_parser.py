@@ -444,6 +444,24 @@ def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | 
     else:
         scan_start = 0
 
+    # BRAIN FORK: first check if Claude is idle (prompt visible between bottom separators).
+    # Claude Code renders: status_line / separator / ❯ prompt / separator / footer.
+    # If ❯ is between the two bottom separators, Claude is waiting for input = idle.
+    separator_positions = []
+    for i in range(len(lines) - 1, scan_start - 1, -1):
+        if _is_separator(lines[i]):
+            separator_positions.append(i)
+        if len(separator_positions) >= 2:
+            break
+
+    if len(separator_positions) >= 2:
+        top_sep = separator_positions[1]  # upper separator
+        bot_sep = separator_positions[0]  # lower separator
+        for k in range(top_sep + 1, bot_sep):
+            line_stripped = lines[k].strip()
+            if line_stripped and line_stripped[0] == "\u276f":  # ❯ prompt character
+                return None  # Claude is idle, no active status
+
     # Scan separators from bottom up within the scan range.
     # Claude Code 4.6 renders two separators around the prompt line;
     # the spinner sits above the upper one, possibly with a blank line between.
