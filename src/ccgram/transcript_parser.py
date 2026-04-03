@@ -71,7 +71,7 @@ class TranscriptParser:
     _NO_CONTENT_PLACEHOLDER = "(no content)"
     _INTERRUPTED_TEXT = "[Request interrupted by user for tool use]"
     _ERROR_SUMMARY_LIMIT = 100
-    _MAX_SUMMARY_LENGTH = 200
+    _MAX_SUMMARY_LENGTH = 50  # BRAIN FORK: shorter for clean Telegram display
 
     # BRAIN FORK: emoji removed for clean Telegram output
     TOOL_EMOJI: dict[str, str] = {}
@@ -301,6 +301,16 @@ class TranscriptParser:
             # not here. We just show the tool name and file path.
         elif name == "Bash":
             summary = input_data.get("command", "")
+            # BRAIN FORK: strip cd/export/source prefixes, show meaningful command
+            if summary:
+                import shlex
+                # Split by && and find first meaningful command
+                parts_cmd = [p.strip() for p in summary.split("&&")]
+                skip_prefixes = ("cd ", "export ", "source ", "set ", "unset ")
+                for part in parts_cmd:
+                    if not any(part.startswith(sp) for sp in skip_prefixes):
+                        summary = part
+                        break
         elif name == "Grep":
             summary = input_data.get("pattern", "")
         elif name == "Task":
@@ -335,12 +345,12 @@ class TranscriptParser:
                     break
 
         emoji = cls.TOOL_EMOJI.get(name, "")
-        prefix = f"{emoji} " if emoji else ""
+        # BRAIN FORK: clean format without bold/backticks/emoji
         if summary:
             if len(summary) > cls._MAX_SUMMARY_LENGTH:
-                summary = summary[: cls._MAX_SUMMARY_LENGTH] + "…"
-            return f"{prefix}**{name}** `{summary}`"
-        return f"{prefix}**{name}**"
+                summary = summary[: cls._MAX_SUMMARY_LENGTH] + "..."
+            return f"{name} {summary}"
+        return name
 
     @staticmethod
     def extract_tool_result_text(content: list | Any) -> str:
