@@ -36,6 +36,10 @@ def build_response_parts(
     # BRAIN FORK: sanitize secrets before sending to Telegram
     text = sanitize(text, len(config.allowed_users))
 
+    # BRAIN FORK: hide hook feedback from chat (internal instructions, not for user)
+    if "hook feedback" in text.lower() or "stop hook" in text.lower() or "session hook" in text.lower():
+        return []
+
     # User messages: add emoji prefix (no newline)
     if role == "user":
         # BRAIN FORK: hide upload notifications from chat (clean UX)

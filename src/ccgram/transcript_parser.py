@@ -76,8 +76,30 @@ class TranscriptParser:
     # BRAIN FORK: emoji removed for clean Telegram output
     TOOL_EMOJI: dict[str, str] = {}
 
-    # BRAIN FORK: tools to hide from Telegram (internal, no user value)
-    HIDDEN_TOOLS: set[str] = {"ToolSearch"}
+    # BRAIN FORK: tools to hide from Telegram -> show Thinking... instead
+    HIDDEN_TOOLS: set[str] = {"ToolSearch", "Grep", "Glob", "TodoWrite", "TodoRead"}
+
+    # BRAIN FORK: bash commands to hide -> show Thinking... instead
+    _HIDDEN_BASH: set[str] = {
+        "ls", "cd", "cat", "grep", "find", "head", "tail", "echo", "touch",
+        "chmod", "chown", "source", "export", "set", "unset", "sed", "awk",
+        "wc", "sort", "uniq", "python3", "python", "node",
+    }
+
+    # BRAIN FORK: bash commands starting with these git subcommands -> hide
+    _HIDDEN_GIT: set[str] = {"add", "stash", "fetch", "branch", "checkout", "rebase", "merge", "reset", "tag"}
+
+    # BRAIN FORK: file extension removal for clean display
+    @staticmethod
+    def _strip_extension(path: str) -> str:
+        """Remove file extension for clean Telegram display."""
+        import os
+        name, ext = os.path.splitext(path)
+        if ext in (".md", ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yaml", ".yml",
+                    ".html", ".css", ".scss", ".sql", ".sh", ".env", ".txt", ".csv",
+                    ".xml", ".toml", ".cfg", ".ini", ".conf", ".log"):
+            return name
+        return path
 
     @staticmethod
     def parse_line(line: str) -> dict | None:
@@ -292,18 +314,20 @@ class TranscriptParser:
             summary = input_data.get("file_path") or input_data.get("pattern", "")
             if name == "Read":
                 summary = shorten_path(summary, cwd)
+                summary = cls._strip_extension(summary)
         elif name == "Write":
             summary = shorten_path(input_data.get("file_path", ""), cwd)
+            summary = cls._strip_extension(summary)
         elif name in ("Edit", "NotebookEdit"):
             summary = input_data.get("file_path") or input_data.get("notebook_path", "")
             summary = shorten_path(summary, cwd)
+            summary = cls._strip_extension(summary)
             # Note: Edit/Update diff and stats are generated in tool_result stage,
             # not here. We just show the tool name and file path.
         elif name == "Bash":
             summary = input_data.get("command", "")
-            # BRAIN FORK: strip cd/export/source prefixes, show meaningful command
+            # BRAIN FORK: parse bash command, hide internal commands
             if summary:
-                import shlex
                 # Split by && and find first meaningful command
                 parts_cmd = [p.strip() for p in summary.split("&&")]
                 skip_prefixes = ("cd ", "export ", "source ", "set ", "unset ")
@@ -311,6 +335,16 @@ class TranscriptParser:
                     if not any(part.startswith(sp) for sp in skip_prefixes):
                         summary = part
                         break
+                # Check if first word is a hidden command
+                first_word = summary.split()[0] if summary.split() else ""
+                # Handle "git add" specifically
+                if first_word == "git" and len(summary.split()) > 1:
+                    git_sub = summary.split()[1]
+                    if git_sub in cls._HIDDEN_GIT:
+                        return "__STATUS__Thinking..."
+                elif first_word in cls._HIDDEN_BASH:
+                    return "__STATUS__Thinking..."
+                # For visible bash: show command as-is (short)
         elif name == "Grep":
             summary = input_data.get("pattern", "")
         elif name == "Task":
@@ -344,13 +378,23 @@ class TranscriptParser:
                     summary = v
                     break
 
-        emoji = cls.TOOL_EMOJI.get(name, "")
         # BRAIN FORK: clean format without bold/backticks/emoji
+        # Special display names
+        display_name = name
+        if name == "AskUserQuestion":
+            display_name = "Ask User Question"
+
+        # For Bash: special labels for docker
+        if name == "Bash" and summary:
+            first_word = summary.split()[0] if summary.split() else ""
+            if first_word == "docker":
+                return "работаю с Docker"
+
         if summary:
             if len(summary) > cls._MAX_SUMMARY_LENGTH:
                 summary = summary[: cls._MAX_SUMMARY_LENGTH] + "..."
-            return f"{name} {summary}"
-        return name
+            return f"{display_name} {summary}"
+        return display_name
 
     @staticmethod
     def extract_tool_result_text(content: list | Any) -> str:
