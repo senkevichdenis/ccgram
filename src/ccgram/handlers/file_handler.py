@@ -271,3 +271,91 @@ async def handle_document_message(
         "I've uploaded {name} to {path}",
         "\U0001f4ce",
     )
+
+
+# BRAIN FORK: Video message handler (added 2026-04-01)
+async def handle_video_message(
+    update: Update, _context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle video uploads: save to .ccgram-uploads/ and notify Claude."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or not message.video:
+        return
+    if not config.is_user_allowed(user.id):
+        await safe_reply(message, "You are not authorized to use this bot.")
+        return
+
+    video = message.video
+    ext = ".mp4"  # Telegram always transcodes to MP4
+    ts = __import__("datetime").datetime.now(tz=__import__("datetime").timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"video_{ts}{ext}"
+    await _upload_and_notify(
+        message,
+        user.id,
+        get_thread_id(update),
+        filename,
+        video.file_id,
+        video.file_size,
+        "Video",
+        "I've uploaded a video to {path} — please take a look.",
+        "\U0001f3ac",
+    )
+
+
+# BRAIN FORK: Audio message handler (added 2026-04-01)
+async def handle_audio_message(
+    update: Update, _context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle audio file uploads: save to .ccgram-uploads/ and notify Claude."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or not message.audio:
+        return
+    if not config.is_user_allowed(user.id):
+        await safe_reply(message, "You are not authorized to use this bot.")
+        return
+
+    audio = message.audio
+    filename = _sanitize_filename(audio.file_name or f"audio_{__import__('datetime').datetime.now(tz=__import__('datetime').timezone.utc).strftime('%Y%m%d_%H%M%S')}.mp3")
+    await _upload_and_notify(
+        message,
+        user.id,
+        get_thread_id(update),
+        filename,
+        audio.file_id,
+        audio.file_size,
+        "Audio",
+        "I've uploaded an audio file to {path}",
+        "\U0001f3b5",
+    )
+
+
+# BRAIN FORK: Voice message handler (replaces Whisper preprocessing, added 2026-04-01)
+async def handle_voice_as_file(
+    update: Update, _context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle voice messages: save OGG to .ccgram-uploads/ and notify Claude.
+    Fred decides whether to transcribe via MCP tool transcribe_audio."""
+    user = update.effective_user
+    message = update.message
+    if not user or not message or not message.voice:
+        return
+    if not config.is_user_allowed(user.id):
+        await safe_reply(message, "You are not authorized to use this bot.")
+        return
+
+    voice = message.voice
+    ts = __import__("datetime").datetime.now(tz=__import__("datetime").timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"voice_{ts}.ogg"
+    await _upload_and_notify(
+        message,
+        user.id,
+        get_thread_id(update),
+        filename,
+        voice.file_id,
+        voice.file_size,
+        "Voice",
+        "I've uploaded a voice message to {path}",
+        "\U0001f3a4",
+    )

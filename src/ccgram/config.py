@@ -77,6 +77,7 @@ class Config:
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"
         self.session_map_file = self.config_dir / "session_map.json"
+        self.topic_presets_file = self.config_dir / "topic_presets.json"
         self.monitor_state_file = self.config_dir / "monitor_state.json"
         self.events_file = self.config_dir / "events.jsonl"
 

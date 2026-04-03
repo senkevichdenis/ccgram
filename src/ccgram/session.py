@@ -1539,7 +1539,7 @@ class SessionManager:
     async def send_to_window(
         self, window_id: str, text: str, *, raw: bool = False
     ) -> tuple[bool, str]:
-        """Send text to a tmux window by ID."""
+        """Send text to a tmux window by ID, waiting for readiness if needed."""
         display = self.get_display_name(window_id)
         logger.debug(
             "send_to_window: window_id=%s (%s), text_len=%d",
@@ -1550,10 +1550,78 @@ class SessionManager:
         window = await tmux_manager.find_window_by_id(window_id)
         if not window:
             return False, "Window not found (may have been closed)"
+
+        # Readiness check: wait for Claude to show input prompt
+        ready = await self._wait_for_readiness(window_id, timeout=30.0)
+        if not ready:
+            logger.warning(
+                "Window %s not ready after 30s, sending anyway", window_id
+            )
+
         success = await tmux_manager.send_keys(window.window_id, text, raw=raw)
         if success:
             return True, f"Sent to {display}"
         return False, "Failed to send keys"
+
+    async def _wait_for_readiness(
+        self, window_id: str, timeout: float = 30.0
+    ) -> bool:
+        """Wait until the tmux pane shows an input prompt (Claude ready).
+
+        Checks pane content for prompt indicators. If trust dialog detected,
+        auto-accepts it by sending Enter.
+
+        Returns True if ready within timeout, False otherwise.
+        """
+        import asyncio as _asyncio
+
+        loop = _asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        trust_sent = False
+
+        while loop.time() < deadline:
+            pane_content = await tmux_manager.capture_pane(window_id)
+            if pane_content is None:
+                await _asyncio.sleep(1.0)
+                continue
+
+            last_lines = pane_content.strip().splitlines()[-8:] if pane_content.strip() else []
+            last_text = "\n".join(last_lines).lower()
+
+            # Trust dialog: auto-accept
+            if not trust_sent and ("trust" in last_text or "do you want to proceed" in last_text):
+                logger.info("Trust dialog detected for %s, auto-accepting", window_id)
+                await tmux_manager.send_keys(window_id, "", raw=True)
+                trust_sent = True
+                await _asyncio.sleep(3.0)
+                continue
+
+            # Claude Code ready indicators
+            if any(indicator in last_text for indicator in [
+                ">", "claude>", "what can i help", "how can i help",
+                "waiting for input", "type a message",
+            ]):
+                return True
+
+            # Check session_map as fallback (session started = likely ready soon)
+            key = f"{config.tmux_session_name}:{window_id}"
+            if config.session_map_file.exists():
+                try:
+                    import json as _json
+                    import aiofiles
+                    async with aiofiles.open(config.session_map_file, "r") as f:
+                        sm_content = await f.read()
+                    session_map = _json.loads(sm_content)
+                    if session_map.get(key, {}).get("session_id"):
+                        # Session exists, give Claude a moment to render prompt
+                        await _asyncio.sleep(2.0)
+                        return True
+                except (ValueError, OSError):
+                    pass
+
+            await _asyncio.sleep(1.0)
+
+        return False
 
     # --- Message history ---
 

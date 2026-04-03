@@ -12,6 +12,8 @@ Key function:
 
 from ..providers.base import EXPANDABLE_QUOTE_END, EXPANDABLE_QUOTE_START
 from ..telegram_sender import split_message
+from ..sanitizer import sanitize  # BRAIN FORK: outbound secret filtering
+from ..config import config  # BRAIN FORK: for allowed_users count
 
 # Max length for user messages before truncation
 _MAX_USER_MSG_LENGTH = 3000
@@ -30,6 +32,9 @@ def build_response_parts(
     Multi-part messages get a [1/N] suffix.
     """
     text = text.strip()
+
+    # BRAIN FORK: sanitize secrets before sending to Telegram
+    text = sanitize(text, len(config.allowed_users))
 
     # User messages: add emoji prefix (no newline)
     if role == "user":

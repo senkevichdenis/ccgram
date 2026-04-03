@@ -162,7 +162,7 @@ from .handlers.message_queue import (
 from .handlers.message_sender import safe_reply
 from .handlers.response_builder import build_response_parts
 from .handlers.status_polling import status_poll_loop
-from .handlers.file_handler import handle_document_message, handle_photo_message
+from .handlers.file_handler import handle_document_message, handle_photo_message, handle_video_message, handle_audio_message, handle_voice_as_file
 from .handlers.voice_handler import handle_voice_message
 from .handlers.text_handler import handle_text_message
 from .session import session_manager
@@ -840,7 +840,7 @@ async def _probe_transcript_command_error(
                 transcript_path,
                 since_offset,
             )
-    except OSError, NotImplementedError:
+    except (OSError, NotImplementedError):
         return None
 
     messages, _ = provider.parse_transcript_entries(entries, pending_tools={})
@@ -1274,23 +1274,68 @@ async def unsupported_content_handler(
     logger.debug("Unsupported content from user %d", user.id)
     # Omit "voice" from the list when whisper is configured (has its own handler)
     media_list = (
-        "Stickers, voice, video" if not config.whisper_provider else "Stickers, video"
+        "Stickers and similar media"
     )
     await safe_reply(
         update.message,
-        f"\u26a0 {media_list}, and similar media are not supported. Use text, photos, or documents.",
+        f"\u26a0 {media_list} are not supported. Use text, photos, documents, video, or voice.",
     )
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
+        # BRAIN FORK: RBAC approval for unknown users
+        if os.getenv("BRAIN_CONTEXT"):
+            from .handlers.rbac_approval import send_approval_request
+            if update.message and user:
+                await send_approval_request(context.bot, user.id, user.full_name)
+            return
         if update.message:
             await safe_reply(update.message, "You are not authorized to use this bot.")
         return
 
     if not update.message or not update.message.text:
         return
+
+    # BRAIN FORK: RBAC permission check for multi-user contexts
+    _brain_ctx = os.getenv("BRAIN_CONTEXT", "")
+    if _brain_ctx:
+        from .rbac import check_access, generate_settings_local, get_project_for_thread, IGNORED_TOPICS
+        _thread_id = getattr(update.message, "message_thread_id", None) or 1
+        # Check ignored topics
+        if _thread_id in IGNORED_TOPICS:
+            return
+        # Get project for this thread
+        _project_slug = await get_project_for_thread(_thread_id)
+        # Check access
+        _access = await check_access(user.id, _project_slug)
+        logger.info("RBAC check", brain_context=_brain_ctx, user_id=user.id)
+        if not _access.allowed:
+            if update.message:
+                await safe_reply(update.message, f"Access denied: {_access.reason}")
+            return
+        # Generate settings.local.json for non-owner
+        if not _access.is_owner:
+            # Find CWD from session manager
+            _cwd = "/home/agent"
+            try:
+                _bindings = session_manager.get_bindings(user.id)
+                for _tid, _wid in _bindings.items():
+                    _ws = session_manager.get_window_state(_wid)
+                    if _ws and _ws.get("cwd"):
+                        _cwd = _ws["cwd"]
+                        break
+            except Exception:
+                pass
+            generate_settings_local(_access, _cwd)
+        # Write current user info for pre-action-check.sh
+        _user_env = f"/tmp/brain-current-user-{_brain_ctx}"
+        try:
+            with open(_user_env, "w") as _f:
+                _f.write(f"BRAIN_CURRENT_USER_ID={user.id}\nBRAIN_CURRENT_USER_NAME={_access.display_name or user.first_name}\n")
+        except OSError:
+            pass
 
     await _sync_scoped_menu_for_text_context(update, user.id)
     await handle_text_message(update, context)
@@ -1347,6 +1392,19 @@ _CB_SHELL = (
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Dispatch callback queries to dedicated handler modules."""
+    # BRAIN FORK: RBAC approval callbacks from owner private chat
+    _rbac_q = update.callback_query
+    if _rbac_q and _rbac_q.data and (_rbac_q.data.startswith("rbac_approve:") or _rbac_q.data.startswith("rbac_deny:")):
+        from .handlers.rbac_approval import handle_approval_callback
+        await handle_approval_callback(update, context)
+        return
+
+    # BRAIN FORK: RED action approval callbacks (from group or owner private chat)
+    if _rbac_q and _rbac_q.data and (_rbac_q.data.startswith("red_approve:") or _rbac_q.data.startswith("red_deny:")):
+        from .handlers.red_approval_handler import handle_red_approval_callback
+        await handle_red_approval_callback(update, context)
+        return
+
     # CallbackQueryHandler doesn't support filters= param, so check inline.
     if config.group_id:
         chat = update.effective_chat
@@ -2002,11 +2060,19 @@ def create_bot() -> Application:
     application.add_handler(
         MessageHandler(filters.Document.ALL & _group_filter, handle_document_message)
     )
-    # Voice messages (transcription when configured)
+    # BRAIN FORK: Voice messages (save OGG, Fred transcribes via MCP tool)
     application.add_handler(
-        MessageHandler(filters.VOICE & _group_filter, handle_voice_message)
+        MessageHandler(filters.VOICE & _group_filter, handle_voice_as_file)
     )
-    # Catch-all: unsupported content (stickers, voice, video, etc.)
+    # BRAIN FORK: Video messages (save to .ccgram-uploads/)
+    application.add_handler(
+        MessageHandler(filters.VIDEO & _group_filter, handle_video_message)
+    )
+    # BRAIN FORK: Audio messages (save to .ccgram-uploads/)
+    application.add_handler(
+        MessageHandler(filters.AUDIO & _group_filter, handle_audio_message)
+    )
+    # Catch-all: unsupported content (stickers, etc.)
     application.add_handler(
         MessageHandler(
             ~filters.COMMAND
@@ -2014,6 +2080,8 @@ def create_bot() -> Application:
             & ~filters.PHOTO
             & ~filters.Document.ALL
             & ~filters.VOICE
+            & ~filters.VIDEO
+            & ~filters.AUDIO
             & ~filters.StatusUpdate.ALL
             & _group_filter,
             unsupported_content_handler,

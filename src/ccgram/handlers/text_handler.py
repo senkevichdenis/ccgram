@@ -43,6 +43,8 @@ from ..session import session_manager
 from ..providers import get_provider_for_window
 from ..tmux_manager import tmux_manager
 from ..utils import handle_general_topic_message, is_general_topic, task_done_callback
+from ..config import config as _config
+
 
 logger = structlog.get_logger()
 
@@ -166,6 +168,108 @@ async def _check_ui_guards(
         user_data.pop(PENDING_THREAD_TEXT, None)
 
     return False
+
+
+
+async def _try_auto_bind_from_preset(
+    user_id: int,
+    thread_id: int,
+    text: str,
+    message: Message,
+    bot: Bot,
+) -> bool:
+    """Auto-create window and bind topic if a preset exists in topic_presets.json.
+
+    Returns True if preset was found and window created (handled), False to continue.
+    """
+    import json as _json
+
+    # Already bound? Skip
+    window_id = session_manager.get_window_for_thread(user_id, thread_id)
+    if window_id is not None:
+        return False
+
+    # Load presets
+    presets_file = _config.topic_presets_file
+    if not presets_file.exists():
+        return False
+
+    try:
+        with open(presets_file) as f:
+            presets = _json.load(f)
+    except (ValueError, OSError):
+        return False
+
+    preset = presets.get(str(thread_id))
+    if not preset:
+        return False
+
+    path = preset.get("path", "")
+    provider_name = preset.get("provider", "claude")
+    approval_mode = preset.get("mode", "yolo")
+
+    if not path:
+        return False
+
+    from pathlib import Path as _Path
+    if not _Path(path).is_dir():
+        logger.warning("Preset path does not exist: %s (thread=%d)", path, thread_id)
+        return False
+
+    logger.info(
+        "Auto-binding from preset: thread=%d -> %s (provider=%s, mode=%s)",
+        thread_id, path, provider_name, approval_mode,
+    )
+
+    # Show startup indicator
+    startup_msg = await message.reply_text(
+        f"\u2699\ufe0f Starting Claude Code in {_Path(path).name}..."
+    )
+
+    # Create window
+    from ccgram.providers import resolve_launch_command
+    launch_command = resolve_launch_command(provider_name, approval_mode=approval_mode)
+    success, msg, created_wname, created_wid = await tmux_manager.create_window(
+        path, launch_command=launch_command
+    )
+    if not success:
+        await startup_msg.edit_text(f"\u274c Failed to create window: {msg}")
+        return True  # handled (with error)
+
+    # Set window metadata
+    session_manager.update_user_mru(user_id, path)
+    window_state = session_manager.get_window_state(created_wid)
+    window_state.cwd = path
+    session_manager.set_window_provider(created_wid, provider_name)
+    session_manager.set_window_approval_mode(created_wid, approval_mode)
+    await tmux_manager.stamp_pane_title(created_wid, provider_name)
+
+    # Store group chat_id
+    chat = message.chat
+    if chat.type in ("group", "supergroup"):
+        session_manager.set_group_chat_id(user_id, thread_id, chat.id)
+
+    # Wait for Claude to be ready
+    from ccgram.providers import registry as provider_registry
+    if provider_registry.get(provider_name).capabilities.supports_hook:
+        found = await session_manager.wait_for_session_map_entry(created_wid, timeout=30.0)
+        if not found:
+            logger.warning("Claude did not start within 30s for preset window %s", created_wid)
+
+    # Bind thread
+    session_manager.bind_thread(user_id, thread_id, created_wid, window_name=created_wname)
+
+    # Update startup message
+    await startup_msg.edit_text(
+        f"\u2705 Created window \'{created_wname}\' at {path}\n\nBound to this topic. Send messages here."
+    )
+
+    # Forward the original message
+    send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
+    if not send_ok:
+        logger.warning("Failed to forward preset pending text: %s", send_msg)
+
+    return True
 
 
 async def _handle_unbound_topic(
@@ -387,6 +491,12 @@ async def handle_text_message(
                 message,
                 "\u274c Please use a named topic. Create a new topic to start a session.",
             )
+        return
+
+    # Auto-bind from topic presets (no UI needed)
+    if await _try_auto_bind_from_preset(
+        user.id, thread_id, text, message, context.bot
+    ):
         return
 
     # Unbound topic — show picker or browser
