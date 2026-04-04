@@ -477,10 +477,7 @@ async def handle_text_message(
         # Download attachments to .ccgram-uploads/ for Claude to read
         try:
             upload_dir = None
-            if thread_id is None:
-                _tid_temp = _get_thread_id(update)
-            else:
-                _tid_temp = thread_id
+            _tid_temp = _get_thread_id(update)
             if _tid_temp is not None:
                 _wid = session_manager.get_window_for_thread(user.id, _tid_temp)
                 if _wid:
