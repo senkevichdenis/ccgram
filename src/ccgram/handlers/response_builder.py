@@ -40,6 +40,10 @@ def build_response_parts(
     if "hook feedback" in text.lower() or "stop hook" in text.lower() or "session hook" in text.lower():
         return []
 
+    # BRAIN FORK: hide tool_result from chat (internal details, not for user)
+    if content_type == "tool_result":
+        return []
+
     # User messages: add emoji prefix (no newline)
     if role == "user":
         # BRAIN FORK: hide upload notifications from chat (clean UX)

@@ -87,7 +87,7 @@ class TranscriptParser:
     }
 
     # BRAIN FORK: bash commands starting with these git subcommands -> hide
-    _HIDDEN_GIT: set[str] = {"add", "stash", "fetch", "branch", "checkout", "rebase", "merge", "reset", "tag"}
+    _HIDDEN_GIT: set[str] = {"add", "stash", "fetch", "branch", "checkout", "rebase", "merge", "reset", "tag", "log", "status", "diff", "show", "remote", "config"}
 
     # BRAIN FORK: file extension removal for clean display
     @staticmethod
