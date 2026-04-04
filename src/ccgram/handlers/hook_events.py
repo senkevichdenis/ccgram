@@ -43,9 +43,8 @@ async def _write_diary_background(context, transcript_path, cwd):
     today = _diary_datetime.now().strftime("%Y-%m-%d")
     diary_dir = "/home/agent/contexts/" + context + "/diary"
     diary_file = diary_dir + "/" + today + ".md"
-    if _diary_os.path.isfile(diary_file) and _diary_os.path.getsize(diary_file) > 50:
-        logger.info("Diary already written for %s, skipping", today)
-        return
+    # No size-based skip: multiple sessions per day should all contribute
+    # claude -p prompt handles dedup ("что НОВОГО с последней записи")
     try:
         lock_fd = open(_DIARY_LOCK_FILE, "w")
         _diary_fcntl.flock(lock_fd, _diary_fcntl.LOCK_EX | _diary_fcntl.LOCK_NB)
@@ -59,7 +58,7 @@ async def _write_diary_background(context, transcript_path, cwd):
     try:
         config_dir = "/home/agent/contexts/" + context + "/config"
         prompt = (
-            "Посмотри что произошло сегодня. Проверь git log, прочитай diary/ за сегодня если есть. "
+            "Посмотри что произошло с последней записи в дневнике. Прочитай diary/ за сегодня если есть, допиши только НОВОЕ. "
             "Фокус на 6 категориях: (1) Решения и ПОЧЕМУ, (2) Бизнес-обсуждения и идеи (даже без кода), "
             "(3) Новые знания и коррекции от пользователя, (4) Ключевые изменения (суть, не список файлов), "
             "(5) Проблемы и как решили, (6) Открытые вопросы (что подвешено). "
