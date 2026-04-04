@@ -313,6 +313,20 @@ class TranscriptParser:
         if name in ("Read", "Glob"):
             summary = input_data.get("file_path") or input_data.get("pattern", "")
             if name == "Read":
+                # BRAIN FORK: files from .ccgram-uploads/ -> status message by extension
+                raw_path = summary
+                if ".ccgram-uploads/" in raw_path or "ccgram-uploads/" in raw_path:
+                    lower = raw_path.lower()
+                    if any(lower.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                        return "__STATUS__Viewing image..."
+                    elif any(lower.endswith(ext) for ext in (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt")):
+                        return "__STATUS__Reading document..."
+                    elif any(lower.endswith(ext) for ext in (".mp4", ".mov", ".avi", ".mkv", ".webm")):
+                        return "__STATUS__Watching video..."
+                    elif any(lower.endswith(ext) for ext in (".ogg", ".mp3", ".m4a", ".wav", ".flac")):
+                        return "__STATUS__Listening..."
+                    else:
+                        return "__STATUS__Reviewing file..."
                 summary = shorten_path(summary, cwd)
                 summary = cls._strip_extension(summary)
         elif name == "Write":
