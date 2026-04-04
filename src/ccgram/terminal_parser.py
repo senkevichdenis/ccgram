@@ -487,44 +487,10 @@ def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | 
 
 # Keyword → short label mapping for status display in Telegram.
 # First match wins; checked against the first word, then full string as fallback.
-_STATUS_KEYWORDS: list[tuple[str, str]] = [
-    ("think", "\U0001f9e0 thinking\u2026"),
-    ("reason", "\U0001f9e0 thinking\u2026"),
-    ("test", "\U0001f9ea testing\u2026"),
-    ("read", "\U0001f4d6 reading\u2026"),
-    ("edit", "\u270f\ufe0f editing\u2026"),
-    ("writ", "\U0001f4dd writing\u2026"),
-    ("search", "\U0001f50d searching\u2026"),
-    ("grep", "\U0001f50d searching\u2026"),
-    ("glob", "\U0001f4c2 searching\u2026"),
-    ("install", "\U0001f4e6 installing\u2026"),
-    ("runn", "\u26a1 running\u2026"),
-    ("bash", "\u26a1 running\u2026"),
-    ("execut", "\u26a1 running\u2026"),
-    ("compil", "\U0001f3d7\ufe0f building\u2026"),
-    ("build", "\U0001f3d7\ufe0f building\u2026"),
-    ("lint", "\U0001f9f9 linting\u2026"),
-    ("format", "\U0001f9f9 formatting\u2026"),
-    ("deploy", "\U0001f680 deploying\u2026"),
-    ("fetch", "\U0001f310 fetching\u2026"),
-    ("download", "\u2b07\ufe0f downloading\u2026"),
-    ("upload", "\u2b06\ufe0f uploading\u2026"),
-    ("commit", "\U0001f4be committing\u2026"),
-    ("push", "\u2b06\ufe0f pushing\u2026"),
-    ("pull", "\u2b07\ufe0f pulling\u2026"),
-    ("clone", "\U0001f4cb cloning\u2026"),
-    ("debug", "\U0001f41b debugging\u2026"),
-    ("delet", "\U0001f5d1\ufe0f deleting\u2026"),
-    ("creat", "\u2728 creating\u2026"),
-    ("check", "\u2705 checking\u2026"),
-    ("updat", "\U0001f504 updating\u2026"),
-    ("analyz", "\U0001f52c analyzing\u2026"),
-    ("analys", "\U0001f52c analyzing\u2026"),
-    ("pars", "\U0001f50d parsing\u2026"),
-    ("verif", "\u2705 verifying\u2026"),
-]
+# BRAIN FORK: all statuses show "Thinking..." (clean UX, no emoji, no details)
+_STATUS_KEYWORDS: list[tuple[str, str]] = []
 
-_DEFAULT_STATUS = "\u2699\ufe0f working\u2026"
+_DEFAULT_STATUS = "Thinking..."
 
 
 def format_status_display(raw_status: str) -> str:

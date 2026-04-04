@@ -221,10 +221,9 @@ async def _try_auto_bind_from_preset(
         thread_id, path, provider_name, approval_mode,
     )
 
-    # Show startup indicator
-    startup_msg = await message.reply_text(
-        f"Starting Claude Code..."
-    )
+    # BRAIN FORK: no startup message (too fast, flickers)
+    # Just send typing action
+    await message.chat.send_action("typing")
 
     # Create window
     from ccgram.providers import resolve_launch_command
@@ -233,7 +232,8 @@ async def _try_auto_bind_from_preset(
         path, launch_command=launch_command
     )
     if not success:
-        await startup_msg.edit_text(f"\u274c Failed to create window: {msg}")
+        from .message_sender import safe_reply
+        await safe_reply(message, f"Failed to create window: {msg}")
         return True  # handled (with error)
 
     # Set window metadata
@@ -252,11 +252,7 @@ async def _try_auto_bind_from_preset(
     if chat.type in ("group", "supergroup"):
         session_manager.set_group_chat_id(user_id, thread_id, chat.id)
 
-    # BRAIN FORK: delete startup message (clean UX)
-    try:
-        await startup_msg.delete()
-    except Exception:
-        pass
+    # (startup message removed - typing action only)
 
     # Forward the original message (readiness probe in send_to_window handles waiting)
     send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
