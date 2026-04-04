@@ -16,6 +16,92 @@ from telegram import Bot
 
 from ..session import session_manager
 
+# BRAIN FORK: Diary writing at session end (5.4)
+import asyncio as _diary_asyncio
+import os as _diary_os
+import fcntl as _diary_fcntl
+from datetime import datetime as _diary_datetime
+
+_diary_background_tasks: set = set()
+_DIARY_LOCK_FILE = "/home/agent/.claude.lock"
+_DIARY_TIMEOUT = 120
+_DIARY_MAX_TURNS = 5
+
+
+def _get_context_from_ccgram_dir() -> str:
+    ccgram_dir = _diary_os.environ.get("CCGRAM_DIR", "")
+    if not ccgram_dir:
+        return ""
+    basename = _diary_os.path.basename(ccgram_dir.rstrip("/"))
+    if basename.startswith(".ccgram-"):
+        return basename[len(".ccgram-"):]
+    return ""
+
+
+async def _write_diary_background(context, transcript_path, cwd):
+    await _diary_asyncio.sleep(3)
+    today = _diary_datetime.now().strftime("%Y-%m-%d")
+    diary_dir = "/home/agent/contexts/" + context + "/diary"
+    diary_file = diary_dir + "/" + today + ".md"
+    if _diary_os.path.isfile(diary_file) and _diary_os.path.getsize(diary_file) > 50:
+        logger.info("Diary already written for %s, skipping", today)
+        return
+    try:
+        lock_fd = open(_DIARY_LOCK_FILE, "w")
+        _diary_fcntl.flock(lock_fd, _diary_fcntl.LOCK_EX | _diary_fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        logger.info("Claude lock busy, skipping diary write")
+        try:
+            lock_fd.close()
+        except Exception:
+            pass
+        return
+    try:
+        config_dir = "/home/agent/contexts/" + context + "/config"
+        prompt = (
+            "Запиши дневник за сегодня в " + diary_file + ". "
+            "Используй абсолютный путь. "
+            "Формат: ## Сделано, ## Решения, ## Наблюдения, ## Блокеры, ## Завтра. "
+            "Append если файл уже существует. Кратко, по делу."
+        )
+        env = _diary_os.environ.copy()
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+        proc = await _diary_asyncio.create_subprocess_exec(
+            "/home/agent/bin/claude-context.sh",
+            "-p", prompt,
+            "--max-turns", str(_DIARY_MAX_TURNS),
+            stdout=_diary_asyncio.subprocess.DEVNULL,
+            stderr=_diary_asyncio.subprocess.DEVNULL,
+            cwd="/home/agent",
+            env=env,
+        )
+        try:
+            await _diary_asyncio.wait_for(proc.wait(), timeout=_DIARY_TIMEOUT)
+            logger.info("Diary written for context=%s exit=%d", context, proc.returncode)
+        except _diary_asyncio.TimeoutError:
+            proc.kill()
+            logger.warning("Diary write timed out for context=%s", context)
+    except Exception as e:
+        logger.error("Diary write failed: %s", e)
+    finally:
+        try:
+            _diary_fcntl.flock(lock_fd, _diary_fcntl.LOCK_UN)
+            lock_fd.close()
+        except Exception:
+            pass
+
+
+def trigger_diary_write(context, transcript_path, cwd):
+    if not context:
+        return
+    task = _diary_asyncio.ensure_future(
+        _write_diary_background(context, transcript_path, cwd)
+    )
+    _diary_background_tasks.add(task)
+    task.add_done_callback(_diary_background_tasks.discard)
+    logger.info("Diary write triggered for context=%s", context)
+
+
 logger = structlog.get_logger()
 
 _WINDOW_KEY_PARTS = 2
@@ -300,6 +386,11 @@ async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
     # Clear session association and subagent tracking so next launch starts fresh
     if users:
         window_id = users[0][2]
+        # BRAIN FORK: trigger diary write before clearing session (5.4)
+        state = session_manager.get_window_state(window_id)
+        context = _get_context_from_ccgram_dir()
+        trigger_diary_write(context, state.transcript_path, state.cwd)
+
         session_manager.clear_window_session(window_id)
         clear_subagents(window_id)
 
