@@ -459,6 +459,75 @@ async def handle_text_message(
     assert message is not None and message.text  # guaranteed by caller
 
     text = message.text
+
+    # BRAIN FORK: enrich with reply context (quoted message + attachments)
+    reply = message.reply_to_message
+    if reply:
+        reply_parts = []
+        # Sender info
+        reply_user = reply.from_user
+        sender = reply_user.first_name if reply_user and not reply_user.is_bot else "Fred"
+        reply_parts.append(f"[Replying to {sender}]")
+        # Text content
+        if reply.text:
+            reply_text = reply.text[:2000] + ("..." if len(reply.text) > 2000 else "")
+            reply_parts.append(reply_text)
+        elif reply.caption:
+            reply_parts.append(reply.caption[:1000])
+        # Download attachments to .ccgram-uploads/ for Claude to read
+        try:
+            upload_dir = None
+            if thread_id is None:
+                _tid_temp = _get_thread_id(update)
+            else:
+                _tid_temp = thread_id
+            if _tid_temp is not None:
+                _wid = session_manager.get_window_for_thread(user.id, _tid_temp)
+                if _wid:
+                    _ws = session_manager.get_window_state(_wid)
+                    if _ws.cwd:
+                        upload_dir = Path(_ws.cwd) / ".ccgram-uploads"
+            if reply.photo and upload_dir:
+                photo = reply.photo[-1]  # highest resolution
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                f = await photo.get_file()
+                fname = f"reply_photo_{photo.file_unique_id}.jpg"
+                await f.download_to_drive(upload_dir / fname)
+                reply_parts.append(f"[Photo saved: .ccgram-uploads/{fname}]")
+            if reply.document and upload_dir:
+                doc = reply.document
+                fname = doc.file_name or f"reply_doc_{doc.file_unique_id}"
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                f = await doc.get_file()
+                await f.download_to_drive(upload_dir / fname)
+                reply_parts.append(f"[Document saved: .ccgram-uploads/{fname}]")
+            if reply.voice and upload_dir:
+                voice = reply.voice
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                f = await voice.get_file()
+                fname = f"reply_voice_{voice.file_unique_id}.ogg"
+                await f.download_to_drive(upload_dir / fname)
+                reply_parts.append(f"[Voice saved: .ccgram-uploads/{fname}]")
+            if reply.video and upload_dir:
+                video = reply.video
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                f = await video.get_file()
+                fname = f"reply_video_{video.file_unique_id}.mp4"
+                await f.download_to_drive(upload_dir / fname)
+                reply_parts.append(f"[Video saved: .ccgram-uploads/{fname}]")
+            if reply.audio and upload_dir:
+                audio = reply.audio
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                f = await audio.get_file()
+                fname = audio.file_name or f"reply_audio_{audio.file_unique_id}.mp3"
+                await f.download_to_drive(upload_dir / fname)
+                reply_parts.append(f"[Audio saved: .ccgram-uploads/{fname}]")
+        except Exception as e:
+            logger.debug("Failed to download reply attachment: %s", e)
+        if reply_parts:
+            reply_context = "\n".join(reply_parts)
+            text = f"{reply_context}\n\n{text}"
+
     thread_id = _get_thread_id(update)
 
     # Store group chat_id for forum topic message routing
