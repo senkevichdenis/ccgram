@@ -244,28 +244,21 @@ async def _try_auto_bind_from_preset(
     session_manager.set_window_approval_mode(created_wid, approval_mode)
     await tmux_manager.stamp_pane_title(created_wid, provider_name)
 
-    # Store group chat_id
+    # Bind thread FIRST (before prune can delete group_chat_id)
+    session_manager.bind_thread(user_id, thread_id, created_wid, window_name=created_wname)
+
+    # Store group chat_id AFTER bind (prune may have deleted it, we re-set)
     chat = message.chat
     if chat.type in ("group", "supergroup"):
         session_manager.set_group_chat_id(user_id, thread_id, chat.id)
 
-    # Wait for Claude to be ready
-    from ccgram.providers import registry as provider_registry
-    if provider_registry.get(provider_name).capabilities.supports_hook:
-        found = await session_manager.wait_for_session_map_entry(created_wid, timeout=30.0)
-        if not found:
-            logger.warning("Claude did not start within 30s for preset window %s", created_wid)
-
-    # Bind thread
-    session_manager.bind_thread(user_id, thread_id, created_wid, window_name=created_wname)
-
-    # BRAIN FORK: delete startup message (clean UX, no "Created window" noise)
+    # BRAIN FORK: delete startup message (clean UX)
     try:
         await startup_msg.delete()
     except Exception:
         pass
 
-    # Forward the original message
+    # Forward the original message (readiness probe in send_to_window handles waiting)
     send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
     if not send_ok:
         logger.warning("Failed to forward preset pending text: %s", send_msg)
