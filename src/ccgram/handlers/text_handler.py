@@ -223,7 +223,7 @@ async def _try_auto_bind_from_preset(
 
     # Show startup indicator
     startup_msg = await message.reply_text(
-        f"\u2699\ufe0f Starting Claude Code in {_Path(path).name}..."
+        f"Starting Claude Code..."
     )
 
     # Create window
@@ -259,10 +259,11 @@ async def _try_auto_bind_from_preset(
     # Bind thread
     session_manager.bind_thread(user_id, thread_id, created_wid, window_name=created_wname)
 
-    # Update startup message
-    await startup_msg.edit_text(
-        f"\u2705 Created window \'{created_wname}\' at {path}\n\nBound to this topic. Send messages here."
-    )
+    # BRAIN FORK: delete startup message (clean UX, no "Created window" noise)
+    try:
+        await startup_msg.delete()
+    except Exception:
+        pass
 
     # Forward the original message
     send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
