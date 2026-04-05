@@ -531,12 +531,23 @@ class SessionMonitor:
         else:
             self._pending_tools.pop(session_id, None)
 
+        _prev_tool_key = None
         for entry in agent_messages:
             if not entry.text:
                 continue
             # BRAIN FORK: skip user echo (user already sees their message in Telegram)
             if entry.role == "user":
                 continue
+            # BRAIN FORK: skip duplicate tool_use for same tool (patch 36)
+            # parse_entries generates two entries per tool call: tool_use (short) and
+            # tool_use+result (with details). Keep only the first one.
+            if entry.content_type == "tool_use" and entry.tool_name:
+                _tool_key = f"{entry.tool_name}:{entry.tool_use_id or ''}"
+                if _tool_key == _prev_tool_key:
+                    continue
+                _prev_tool_key = _tool_key
+            else:
+                _prev_tool_key = None
             new_messages.append(
                 NewMessage(
                     session_id=session_id,
