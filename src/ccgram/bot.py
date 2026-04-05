@@ -1521,12 +1521,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # --- Streaming response / notifications ---
 
 
+# BRAIN FORK: dedup recent messages (patch 36)
+import time as _time
+_recent_msgs: dict[str, float] = {}
+_DEDUP_WINDOW = 2.0
+
+
 async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
     """Handle a new assistant message — enqueue for sequential processing.
 
     Messages are queued per-user to ensure status messages always appear last.
     Routes via thread_bindings to deliver to the correct topic.
     """
+    # BRAIN FORK: skip duplicate messages within 2s window
+    _dedup_key = f"{msg.session_id}:{hash(msg.text)}"
+    _now = _time.monotonic()
+    if _dedup_key in _recent_msgs and _now - _recent_msgs[_dedup_key] < _DEDUP_WINDOW:
+        logger.debug("Dedup: skipping duplicate message (session=%s, len=%d)", msg.session_id, len(msg.text))
+        return
+    _recent_msgs[_dedup_key] = _now
+    for k in [k for k, t in _recent_msgs.items() if _now - t > 10.0]:
+        _recent_msgs.pop(k, None)
+
     status = "complete" if msg.is_complete else "streaming"
     logger.info(
         "handle_new_message [%s]: session=%s, text_len=%d",
