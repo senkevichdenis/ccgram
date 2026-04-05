@@ -244,38 +244,74 @@ def _build_clean_ui(
 ) -> tuple[str, InlineKeyboardMarkup]:
     """BRAIN FORK: parse interactive UI text, build clean message + option buttons.
 
-    Instead of raw terminal dump + navigation keyboard, extract the question
-    and numbered options, then build one button per option.
+    Two formats:
+    - Numbered options (1. Yes / 2. No): clean buttons, one per option
+    - Checkbox options (☐/✔/☒): navigation keyboard (Space to toggle, Enter to confirm)
     """
     lines = raw_text.strip().split("\n")
 
-    # Extract question (lines before numbered options)
-    question_lines = []
+    # Detect checkbox format
+    has_checkboxes = any("\u2610" in l or "\u2714" in l or "\u2612" in l for l in lines)
+
+    if has_checkboxes:
+        # Checkbox multi-select: show full text + navigation keyboard
+        # Filter out hint lines
+        clean_lines = [l.strip() for l in lines
+                       if l.strip() and "Esc to cancel" not in l and "Tab to amend" not in l
+                       and "ctrl+e" not in l and "Enter to select" not in l
+                       and "ctrl-g" not in l]
+        text = "\n".join(clean_lines) if clean_lines else raw_text
+        # Navigation: Space (toggle), Up, Down, Enter (confirm), Esc (cancel)
+        rows = [
+            [
+                InlineKeyboardButton("Toggle", callback_data=f"{CB_ASK_SPACE}{window_id}"[:64]),
+                InlineKeyboardButton("\u2191", callback_data=f"{CB_ASK_UP}{window_id}"[:64]),
+                InlineKeyboardButton("\u2193", callback_data=f"{CB_ASK_DOWN}{window_id}"[:64]),
+            ],
+            [
+                InlineKeyboardButton("Confirm", callback_data=f"{CB_ASK_ENTER}{window_id}"[:64]),
+                InlineKeyboardButton("Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64]),
+            ],
+        ]
+        return text, InlineKeyboardMarkup(rows)
+
+    # Numbered options: parse and build clean buttons
     options = []
+    all_pre_option_lines = []
     for line in lines:
-        stripped = line.strip().lstrip("❯ ")
+        stripped = line.strip().lstrip("\u276f ").lstrip("\u203a ")
         match = _re.match(r"^(\d+)\.\s+(.+)$", stripped)
         if match:
             options.append((int(match.group(1)), match.group(2).strip()))
         elif "Esc to cancel" in line or "Tab to amend" in line or "ctrl+e" in line:
-            continue  # skip hint line
-        elif not options:  # still in question part
-            clean = line.strip()
-            if clean:
-                question_lines.append(clean)
+            continue
+        elif not options:
+            all_pre_option_lines.append(line.strip())
 
-    # Build full question: include all context lines (not just "Do you want to proceed?")
-    question = "\n".join(question_lines) if question_lines else ui_name
+    # Question: last non-empty line before options
+    question = ui_name
+    for line in reversed(all_pre_option_lines):
+        if line:
+            question = line
+            break
 
-    # Build buttons: one row per option, no numbering
+    # Buttons: one per option, no numbering
     rows = []
     for idx, (num, label) in enumerate(options):
         short_label = label if len(label) <= 45 else label[:42] + "..."
         cb_data = f"{CB_OPTION}{window_id}:{idx}"[:64]
         rows.append([InlineKeyboardButton(short_label, callback_data=cb_data)])
 
-    # Always add Esc (cancel) as last row
-    rows.append([InlineKeyboardButton("Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64])])
+    if not rows:
+        # Fallback: no numbered options found, show Enter/Esc
+        rows = [
+            [
+                InlineKeyboardButton("Yes", callback_data=f"{CB_ASK_ENTER}{window_id}"[:64]),
+                InlineKeyboardButton("No", callback_data=f"{CB_ASK_ESC}{window_id}"[:64]),
+            ],
+        ]
+    else:
+        rows.append([InlineKeyboardButton("Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64])])
 
     return question, InlineKeyboardMarkup(rows)
 
