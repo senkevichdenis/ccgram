@@ -233,6 +233,53 @@ async def _capture_interactive_content(
     return status.ui_type, status.raw_text
 
 
+import re as _re
+
+# BRAIN FORK: callback prefix for clean option buttons
+CB_OPTION = "opt:"  # opt:{window_id}:{option_index}
+
+
+def _build_clean_ui(
+    raw_text: str, window_id: str, ui_name: str
+) -> tuple[str, InlineKeyboardMarkup]:
+    """BRAIN FORK: parse interactive UI text, build clean message + option buttons.
+
+    Instead of raw terminal dump + navigation keyboard, extract the question
+    and numbered options, then build one button per option.
+    """
+    lines = raw_text.strip().split("\n")
+
+    # Extract question (lines before numbered options)
+    question_lines = []
+    options = []
+    for line in lines:
+        stripped = line.strip().lstrip("❯ ")
+        match = _re.match(r"^(\d+)\.\s+(.+)$", stripped)
+        if match:
+            options.append((int(match.group(1)), match.group(2).strip()))
+        elif "Esc to cancel" in line or "Tab to amend" in line or "ctrl+e" in line:
+            continue  # skip hint line
+        elif not options:  # still in question part
+            clean = line.strip()
+            if clean:
+                question_lines.append(clean)
+
+    # Build full question: include all context lines (not just "Do you want to proceed?")
+    question = "\n".join(question_lines) if question_lines else ui_name
+
+    # Build buttons: one row per option, no numbering
+    rows = []
+    for idx, (num, label) in enumerate(options):
+        short_label = label if len(label) <= 45 else label[:42] + "..."
+        cb_data = f"{CB_OPTION}{window_id}:{idx}"[:64]
+        rows.append([InlineKeyboardButton(short_label, callback_data=cb_data)])
+
+    # Always add Esc (cancel) as last row
+    rows.append([InlineKeyboardButton("Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64])])
+
+    return question, InlineKeyboardMarkup(rows)
+
+
 async def handle_interactive_ui(
     bot: Bot,
     user_id: int,
@@ -250,20 +297,112 @@ async def handle_interactive_ui(
     multi-pane windows such as agent teams).  The pane context is shown
     in the message and the keyboard routes responses to that pane.
     """
-    # BRAIN FORK: disabled interactive keyboard UI (Space/arrows/Enter)
-    # In YOLO mode, permissions are auto-approved so this is not needed
-    return False
+    # BRAIN FORK: selective interactive UI (patch 7 revised)
+    # Settings/SelectModel: block (system UI, not for Telegram)
+    # PermissionPrompt/RestoreCheckpoint: check can_write, deny if no edit rights
+    # AskUserQuestion/ExitPlanMode/SelectionUI: always show in Telegram
     captured = await _capture_interactive_content(window_id, pane_id=pane_id)
     if not captured:
         return False
 
     ui_name, text = captured
-    # Prepend pane context for non-active pane alerts
-    if pane_id:
-        text = f"\U0001f500 Pane ({pane_id}):\n{text}"
+
+    # BRAIN FORK: for PermissionPrompt, enrich text with context from full pane
+    # Keep only: description line + "Claude requested..." lines
+    if ui_name == "PermissionPrompt":
+        try:
+            w = await tmux_manager.find_window_by_id(window_id)
+            if w:
+                full_pane = await tmux_manager.capture_pane(w.window_id)
+                if full_pane:
+                    pane_lines = full_pane.strip().split("\n")
+                    context_lines = []
+                    in_ui_block = False
+                    found_empty_after_header = False
+                    for pl in pane_lines:
+                        if "\u2500" * 10 in pl:
+                            in_ui_block = True
+                            context_lines = []
+                            found_empty_after_header = False
+                            continue
+                        if in_ui_block and "Do you want to proceed" in pl:
+                            break
+                        if in_ui_block:
+                            stripped = pl.strip()
+                            # "Claude requested..." and everything after it
+                            if "Claude requested" in stripped or "but you" in stripped or "granted" in stripped:
+                                context_lines.append(stripped)
+                            # Description line: non-empty after first empty line (skip tool name + command)
+                            elif stripped and found_empty_after_header and "Claude" not in stripped and "/" not in stripped:
+                                context_lines.append(stripped)
+                            elif not stripped:
+                                found_empty_after_header = True
+                    if context_lines:
+                        # description + Claude requested... on separate lines
+                        desc_parts = []
+                        claude_parts = []
+                        for cl in context_lines:
+                            if "Claude" in cl or "but you" in cl or "granted" in cl:
+                                claude_parts.append(cl)
+                            else:
+                                desc_parts.append(cl)
+                        parts = []
+                        if desc_parts:
+                            parts.append(" ".join(desc_parts))
+                        if claude_parts:
+                            parts.append(" ".join(claude_parts))
+                        text = "\n".join(parts) + "\n" + text
+        except Exception:
+            pass
+
+    # BRAIN FORK: filter by UI type (patch 7 revised)
+    _BLOCKED_UI = {"Settings", "SelectModel"}
+    _EDIT_REQUIRED_UI = {"PermissionPrompt", "RestoreCheckpoint"}
+
+    if ui_name in _BLOCKED_UI:
+        logger.debug("Blocked system UI: %s (window=%s)", ui_name, window_id)
+        return False
+
+    if ui_name in _EDIT_REQUIRED_UI:
+        # Check if user has edit rights
+        import os as _os
+        _ctx = _os.getenv("BRAIN_CONTEXT", "")
+        _has_edit = True  # default for non-RBAC contexts
+        if _ctx:
+            _allowed = _os.getenv("ALLOWED_USERS", "")
+            _owner_id = _allowed.split(",")[0].strip() if _allowed else ""
+            if str(user_id) == _owner_id:
+                _has_edit = True  # owner always has edit
+            else:
+                # Read can_write from current user file
+                try:
+                    with open(f"/tmp/brain-current-user-{_ctx}") as _uf:
+                        _udata = dict(l.strip().split("=", 1) for l in _uf if "=" in l)
+                    _has_edit = _udata.get("BRAIN_CURRENT_USER_CAN_WRITE", "false") == "true"
+                except (OSError, ValueError):
+                    _has_edit = False
+
+        if not _has_edit:
+            # Auto-deny: send Esc to tmux, notify user
+            logger.info("Auto-deny %s: user %d has no edit rights", ui_name, user_id)
+            await tmux_manager.send_keys(window_id, "Escape", raw=True)
+            chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+            thread_kwargs: dict[str, int] = {}
+            if thread_id is not None:
+                thread_kwargs["message_thread_id"] = thread_id
+            with contextlib.suppress(TelegramError):
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="Нет прав на изменение в этом проекте.",
+                    **thread_kwargs,
+                )
+            return True
+
+    # BRAIN FORK: clean UI -- parse options, build simple buttons (patch 7 revised)
     ikey = (user_id, thread_id or 0)
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-    keyboard = _build_interactive_keyboard(window_id, ui_name=ui_name, pane_id=pane_id)
+    clean_msg, keyboard = _build_clean_ui(text, window_id, ui_name)
+    text = clean_msg
 
     # Try editing existing interactive message first
     existing_msg_id = _interactive_msgs.get(ikey)

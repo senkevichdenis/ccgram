@@ -25,7 +25,7 @@ from .callback_data import (
     CB_ASK_TAB,
     CB_ASK_UP,
 )
-from .interactive_ui import clear_interactive_msg, handle_interactive_ui
+from .interactive_ui import CB_OPTION, clear_interactive_msg, handle_interactive_ui
 
 logger = structlog.get_logger()
 
@@ -49,10 +49,11 @@ INTERACTIVE_KEY_LABELS: dict[str, str] = {
     CB_ASK_TAB: "\u21e5 Tab",
 }
 
-# All interactive prefixes (key map + refresh)
+# All interactive prefixes (key map + refresh + option)
 INTERACTIVE_PREFIXES: tuple[str, ...] = (
     *INTERACTIVE_KEY_MAP,
     CB_ASK_REFRESH,
+    CB_OPTION,
 )
 
 
@@ -91,7 +92,12 @@ async def handle_interactive_callback(
     cb_prefix, window_id, pane_id = matched
     from .callback_helpers import get_thread_id, user_owns_window
 
-    if not user_owns_window(user_id, window_id):
+    # BRAIN FORK: for option buttons, extract real window_id before ownership check
+    _check_window_id = window_id
+    if cb_prefix == CB_OPTION and ":" in window_id:
+        _check_window_id = window_id.rsplit(":", 1)[0]
+
+    if not user_owns_window(user_id, _check_window_id):
         await query.answer("Not your session", show_alert=True)
         return
 
@@ -102,6 +108,21 @@ async def handle_interactive_callback(
             context.bot, user_id, window_id, thread_id, pane_id=pane_id
         )
         await query.answer("\U0001f504")
+    elif cb_prefix == CB_OPTION:
+        # BRAIN FORK: clean option button (patch 7 revised)
+        # window_id format: "@10:2" where 2 is option index
+        parts = window_id.rsplit(":", 1)
+        real_window_id = parts[0]
+        option_idx = int(parts[1]) if len(parts) > 1 else 0
+        w = await tmux_manager.find_window_by_id(real_window_id)
+        if w:
+            # Move cursor down to selected option, then Enter
+            for _ in range(option_idx):
+                await tmux_manager.send_keys(w.window_id, "Down", enter=False, literal=False)
+                await asyncio.sleep(0.1)
+            await tmux_manager.send_keys(w.window_id, "Enter", enter=False, literal=False)
+        await clear_interactive_msg(user_id, context.bot, thread_id)
+        await query.answer("OK")
     else:
         tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
         if pane_id:
