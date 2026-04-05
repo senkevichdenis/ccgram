@@ -211,15 +211,11 @@ async def _upload_and_notify(
     if caption:
         claude_msg += f"\n\nUser note: {_sanitize_caption(caption)}"
 
-    success, err = await session_manager.send_to_window(window_id, claude_msg)
-    if success:
-        await ack_reaction(message.get_bot(), message.chat.id, message.message_id)
-        # BRAIN FORK: no upload notification in chat (clean UX)
-        await message.chat.send_action(ChatAction.TYPING)
-    else:
-        await safe_reply(
-            message, f"\u274c File saved but failed to notify Claude: {err}"
-        )
+    # BRAIN FORK: use msg_batcher for 1s debounce (patch 35)
+    from .msg_batcher import enqueue as _batch_enqueue
+    await _batch_enqueue(window_id, claude_msg)
+    await ack_reaction(message.get_bot(), message.chat.id, message.message_id)
+    await message.chat.send_action(ChatAction.TYPING)
 
 
 async def handle_photo_message(
