@@ -122,6 +122,14 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
             pending_update = _pending_updates.pop(new_user_id, None)
             if pending_update:
                 try:
+                    # Clear any stale bindings for this user before replay
+                    from ..session import session_manager
+                    _msg = pending_update.message
+                    _tid = getattr(_msg, "message_thread_id", None) or 1 if _msg else 1
+                    _stale_wid = session_manager.get_window_for_thread(new_user_id, _tid)
+                    if _stale_wid:
+                        session_manager.unbind_thread(new_user_id, _tid)
+                        logger.info("RBAC: cleared stale binding before replay", user_id=new_user_id, thread=_tid, window=_stale_wid)
                     from ..bot import text_handler
                     await text_handler(pending_update, context)
                     logger.info("RBAC: replayed pending message", user_id=new_user_id)
