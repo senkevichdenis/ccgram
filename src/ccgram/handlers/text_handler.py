@@ -14,6 +14,12 @@ from telegram import Bot, Message, Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
+# BRAIN FORK: forward message batching (patch 35)
+# Buffer forwarded messages and flush after 2s debounce or on non-forward message
+_forward_buffers: dict[tuple[int, int, str], list[tuple[str, Message]]] = {}  # (user_id, thread_id, window_id) -> [(text, message)]
+_forward_timers: dict[tuple[int, int, str], asyncio.Task] = {}
+_FORWARD_DEBOUNCE_SECONDS = 2.0
+
 from .callback_helpers import get_thread_id as _get_thread_id
 from .directory_browser import (
     BROWSE_DIRS_KEY,
@@ -400,6 +406,27 @@ async def _handle_dead_window(
     return True
 
 
+
+
+async def _flush_forward_buffer(
+    key: tuple[int, int, str],
+    window_id: str,
+    user_id: int,
+    thread_id: int,
+    bot: Bot,
+) -> None:
+    """BRAIN FORK: flush accumulated forward buffer as one combined message."""
+    buffer = _forward_buffers.pop(key, [])
+    _forward_timers.pop(key, None)
+    if not buffer:
+        return
+    # Combine all texts with blank line separator
+    combined_text = "\n\n".join(text for text, _ in buffer)
+    last_message = buffer[-1][1]  # use last message for ack/reply
+    logger.info("Forward batch flushed: %d messages, %d chars", len(buffer), len(combined_text))
+    await _forward_message(window_id, user_id, thread_id, combined_text, bot, last_message)
+
+
 async def _forward_message(
     window_id: str,
     user_id: int,
@@ -580,5 +607,46 @@ async def handle_text_message(
         )
         return
 
-    # Forward message to window
+    # BRAIN FORK: batch forwarded messages (patch 35)
+    is_forward = message.forward_origin is not None
+    buf_key = (user.id, thread_id, window_id)
+
+    if is_forward:
+        # Add forward to buffer, start/reset debounce timer
+        if buf_key not in _forward_buffers:
+            _forward_buffers[buf_key] = []
+        # Add forward metadata prefix
+        origin = message.forward_origin
+        sender = ""
+        if hasattr(origin, "sender_user") and origin.sender_user:
+            sender = origin.sender_user.first_name
+        elif hasattr(origin, "sender_user_name") and origin.sender_user_name:
+            sender = origin.sender_user_name
+        elif hasattr(origin, "chat") and origin.chat:
+            sender = origin.chat.title or ""
+        fwd_text = f"[Forwarded from {sender}]\n{text}" if sender else f"[Forwarded]\n{text}"
+        _forward_buffers[buf_key].append((fwd_text, message))
+        # Cancel existing timer
+        old_timer = _forward_timers.pop(buf_key, None)
+        if old_timer and not old_timer.done():
+            old_timer.cancel()
+        # Start new debounce timer
+        async def _flush_after_delay(key=buf_key, wid=window_id, uid=user.id, tid=thread_id, b=context.bot):
+            await asyncio.sleep(_FORWARD_DEBOUNCE_SECONDS)
+            await _flush_forward_buffer(key, wid, uid, tid, b)
+        _forward_timers[buf_key] = asyncio.create_task(_flush_after_delay())
+        # Ack the forward message
+        await ack_reaction(context.bot, message.chat.id, message.message_id)
+        return
+
+    # Non-forward message: if there's a pending buffer, add and flush immediately
+    if buf_key in _forward_buffers:
+        old_timer = _forward_timers.pop(buf_key, None)
+        if old_timer and not old_timer.done():
+            old_timer.cancel()
+        _forward_buffers[buf_key].append((text, message))
+        await _flush_forward_buffer(buf_key, window_id, user.id, thread_id, context.bot)
+        return
+
+    # Regular message, no pending forwards: send immediately
     await _forward_message(window_id, user.id, thread_id, text, context.bot, message)
