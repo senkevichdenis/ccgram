@@ -534,6 +534,9 @@ class SessionMonitor:
         for entry in agent_messages:
             if not entry.text:
                 continue
+            # BRAIN FORK: skip user echo (user already sees their message in Telegram)
+            if entry.role == "user":
+                continue
             new_messages.append(
                 NewMessage(
                     session_id=session_id,
