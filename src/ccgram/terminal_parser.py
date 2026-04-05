@@ -444,23 +444,26 @@ def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | 
     else:
         scan_start = 0
 
-    # BRAIN FORK: first check if Claude is idle (prompt visible between bottom separators).
-    # Claude Code renders: status_line / separator / ❯ prompt / separator / footer.
-    # If ❯ is between the two bottom separators, Claude is waiting for input = idle.
-    separator_positions = []
-    for i in range(len(lines) - 1, scan_start - 1, -1):
-        if _is_separator(lines[i]):
-            separator_positions.append(i)
-        if len(separator_positions) >= 2:
-            break
-
-    if len(separator_positions) >= 2:
-        top_sep = separator_positions[1]  # upper separator
-        bot_sep = separator_positions[0]  # lower separator
-        for k in range(top_sep + 1, bot_sep):
-            line_stripped = lines[k].strip()
-            if line_stripped and line_stripped[0] == "\u276f":  # ❯ prompt character
-                return None  # Claude is idle, no active status
+    # BRAIN FORK: first check if Claude is idle (prompt visible near bottom separators).
+    # ScreenBuffer may split long separators across multiple lines, so scan
+    # bottom 8 lines for prompt near any separator. If found, Claude is idle.
+    # BUT: if there's a spinner ABOVE the separator, Claude is active (thinking/compacting).
+    bottom_lines = lines[max(scan_start, len(lines) - 8):]
+    has_separator = any(_is_separator(l) for l in bottom_lines)
+    if has_separator:
+        has_prompt = any(l.strip() and l.strip()[0] == "\u276f" for l in bottom_lines)
+        if has_prompt:
+            # Check if spinner exists above the top separator in bottom region
+            has_spinner_above = False
+            for l in bottom_lines:
+                if _is_separator(l):
+                    break
+                s = l.strip()
+                if s and is_likely_spinner(s[0]):
+                    has_spinner_above = True
+                    break
+            if not has_spinner_above:
+                return None  # Claude is truly idle
 
     # Scan separators from bottom up within the scan range.
     # Claude Code 4.6 renders two separators around the prompt line;
