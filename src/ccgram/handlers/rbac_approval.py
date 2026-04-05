@@ -2,7 +2,8 @@
 
 When an unknown user writes to the group, sends an inline keyboard
 to the owner private chat. On Approve, adds user to Supabase with
-basic permissions and to in-memory ALLOWED_USERS.
+basic permissions and to in-memory ALLOWED_USERS, then replays the
+original message so the user gets an immediate response.
 """
 
 import os
@@ -17,6 +18,9 @@ logger = structlog.get_logger()
 # Callback data prefix
 CB_RBAC_APPROVE = "rbac_approve:"
 CB_RBAC_DENY = "rbac_deny:"
+
+# BRAIN FORK: pending messages from unapproved users (user_id -> Update)
+_pending_updates: dict[int, Update] = {}
 
 # Owner telegram_id (first in ALLOWED_USERS = owner)
 _OWNER_ID: int | None = None
@@ -36,10 +40,14 @@ def get_owner_id() -> int | None:
     return _OWNER_ID
 
 
-async def send_approval_request(bot: Bot, user_id: int, username: str | None, full_name: str) -> bool:
+async def send_approval_request(
+    bot: Bot, user_id: int, username: str | None, full_name: str,
+    message_text: str | None = None, original_update: Update | None = None,
+) -> bool:
     """Send approval request to owner private chat.
 
     Returns True if request was sent, False if owner chat not available.
+    Stores the original update for replay after approval.
     """
     owner_id = get_owner_id()
     if not owner_id:
@@ -47,6 +55,10 @@ async def send_approval_request(bot: Bot, user_id: int, username: str | None, fu
         return False
 
     display = f"@{username}" if username else full_name
+    msg_preview = ""
+    if message_text:
+        msg_preview = f"\n\nСообщение: {message_text[:200]}"
+
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Approve", callback_data=f"{CB_RBAC_APPROVE}{user_id}:{full_name}"),
@@ -57,10 +69,13 @@ async def send_approval_request(bot: Bot, user_id: int, username: str | None, fu
     try:
         await bot.send_message(
             chat_id=owner_id,
-            text=f"Новый пользователь {display} (ID: {user_id}) пишет в группу.\nОдобрить?",
+            text=f"Новый пользователь {display} (ID: {user_id}) пишет в группу.{msg_preview}\nОдобрить?",
             reply_markup=keyboard,
         )
         logger.info("RBAC approval request sent", user_id=user_id, display=display)
+        # BRAIN FORK: store original update for replay after approval
+        if original_update:
+            _pending_updates[user_id] = original_update
         return True
     except Exception as e:
         logger.error("RBAC: failed to send approval to owner", error=str(e))
@@ -102,102 +117,65 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
 
             await query.edit_message_text(f"Approved: {full_name} (ID: {new_user_id}). Базовые права выданы (discuss, code:read).")
             logger.info("RBAC: user approved", user_id=new_user_id, name=full_name)
+
+            # BRAIN FORK: replay pending message so user gets immediate response
+            pending_update = _pending_updates.pop(new_user_id, None)
+            if pending_update:
+                try:
+                    from ..bot import text_handler
+                    await text_handler(pending_update, context)
+                    logger.info("RBAC: replayed pending message", user_id=new_user_id)
+                except Exception as e:
+                    logger.error("RBAC: failed to replay pending message", error=str(e))
         else:
             await query.edit_message_text(f"Ошибка при добавлении {full_name}. Проверь логи.")
     else:
+        _pending_updates.pop(new_user_id, None)
         await query.edit_message_text(f"Denied: {full_name} (ID: {new_user_id}).")
         logger.info("RBAC: user denied", user_id=new_user_id, name=full_name)
 
 
 async def _add_user_to_supabase(telegram_id: int, full_name: str) -> bool:
-    """Add new user to brain.agent_users with basic green permissions."""
+    """Add new user to brain.agent_users with basic green permissions via RPC."""
     if not SUPABASE_URL or not SUPABASE_KEY or not BRAIN_CONTEXT:
         return False
 
     import httpx
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-    }
 
-    # Use display_name from full_name (lowercase, first word)
     display_name = full_name.lower().split()[0] if full_name else str(telegram_id)
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            # Create user
             resp = await client.post(
-                f"{SUPABASE_URL}/rest/v1/rpc/check_brain_permission",
-                headers=headers,
-                json={"p_telegram_id": telegram_id, "p_context": BRAIN_CONTEXT},
-            )
-            # If user already exists, skip creation
-            result = resp.json()
-            if isinstance(result, dict) and result.get("allowed"):
-                logger.info("RBAC: user already exists in Supabase", telegram_id=telegram_id)
-                return True
-
-            # Create via raw SQL through public wrapper
-            # We need a create function. For now, use the REST API directly
-            # Insert into agent_users
-            resp = await client.post(
-                f"{SUPABASE_URL}/rest/v1/agent_users",
-                headers={**headers, "Content-Profile": "brain", "Prefer": "return=representation"},
+                f"{SUPABASE_URL}/rest/v1/rpc/brain_approve_user",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                },
                 json={
-                    "telegram_id": telegram_id,
-                    "display_name": display_name,
-                    "is_owner": False,
-                    "context": BRAIN_CONTEXT,
+                    "p_telegram_id": telegram_id,
+                    "p_display_name": display_name,
+                    "p_context": BRAIN_CONTEXT,
                 },
             )
 
-            if resp.status_code not in (200, 201):
-                logger.error("RBAC: failed to create user", status=resp.status_code, body=resp.text)
-                return False
-
-            user_data = resp.json()
-            user_id = user_data[0]["id"] if isinstance(user_data, list) else user_data.get("id")
-
-            if not user_id:
-                logger.error("RBAC: no user_id returned after insert")
-                return False
-
-            # Get green permission IDs
-            resp = await client.get(
-                f"{SUPABASE_URL}/rest/v1/agent_permissions?danger_level=eq.green&select=id",
-                headers={**headers, "Accept-Profile": "brain"},
-            )
             if resp.status_code != 200:
-                logger.error("RBAC: failed to get permissions", status=resp.status_code)
+                logger.error("RBAC: brain_approve_user failed", status=resp.status_code, body=resp.text)
                 return False
 
-            perm_ids = [p["id"] for p in resp.json()]
-
-            # Get owner user_id for granted_by
-            resp = await client.get(
-                f"{SUPABASE_URL}/rest/v1/agent_users?display_name=eq.den&context=eq.{BRAIN_CONTEXT}&select=id",
-                headers={**headers, "Accept-Profile": "brain"},
+            result = resp.json()
+            logger.info(
+                "RBAC: user approved via RPC",
+                telegram_id=telegram_id,
+                name=display_name,
+                status=result.get("status"),
+                user_id=str(result.get("user_id", "")),
             )
-            owner_uuid = resp.json()[0]["id"] if resp.status_code == 200 and resp.json() else None
-
-            # Assign green permissions
-            for perm_id in perm_ids:
-                await client.post(
-                    f"{SUPABASE_URL}/rest/v1/agent_user_permissions",
-                    headers={**headers, "Content-Profile": "brain"},
-                    json={
-                        "user_id": user_id,
-                        "permission_id": perm_id,
-                        "granted_by": owner_uuid,
-                    },
-                )
-
-            logger.info("RBAC: user created with green permissions", telegram_id=telegram_id, name=display_name, perms=len(perm_ids))
             return True
 
     except Exception as e:
-        logger.error("RBAC: Supabase error during user creation", error=str(e))
+        logger.error("RBAC: Supabase error during user approval", error=str(e))
         return False
 
 

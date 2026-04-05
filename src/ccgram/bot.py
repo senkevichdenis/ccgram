@@ -1289,7 +1289,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if os.getenv("BRAIN_CONTEXT"):
             from .handlers.rbac_approval import send_approval_request
             if update.message and user:
-                await send_approval_request(context.bot, user.id, user.full_name)
+                await send_approval_request(
+                    context.bot, user.id, user.username, user.full_name,
+                    message_text=update.message.text, original_update=update,
+                )
             return
         if update.message:
             await safe_reply(update.message, "You are not authorized to use this bot.")
@@ -1299,41 +1302,53 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     # BRAIN FORK: RBAC permission check for multi-user contexts
+    # Topic scoping: each topic = one project scope for non-owner users
     _brain_ctx = os.getenv("BRAIN_CONTEXT", "")
     if _brain_ctx:
-        from .rbac import check_access, generate_settings_local, get_project_for_thread, IGNORED_TOPICS
+        from .rbac import check_access, generate_settings_local, get_project_for_thread, get_all_projects, IGNORED_TOPICS
         _thread_id = getattr(update.message, "message_thread_id", None) or 1
         # Check ignored topics
         if _thread_id in IGNORED_TOPICS:
             return
-        # Get project for this thread
+        # Get project for this thread (None for General/informational topics)
         _project_slug = await get_project_for_thread(_thread_id)
         # Check access
         _access = await check_access(user.id, _project_slug)
-        logger.info("RBAC check", brain_context=_brain_ctx, user_id=user.id)
+        logger.info("RBAC check", brain_context=_brain_ctx, user_id=user.id, project=_project_slug)
         if not _access.allowed:
             if update.message:
-                await safe_reply(update.message, f"Access denied: {_access.reason}")
+                if _access.reason == "no_project_access":
+                    await safe_reply(update.message, "У тебя нет доступа к этому проекту. Обратись к Den.")
+                else:
+                    await safe_reply(update.message, "Нет доступа.")
             return
-        # Generate settings.local.json for non-owner
+        # Get project_path for deny rules
+        _project_path = None
+        if _project_slug:
+            _all_projects = await get_all_projects()
+            for _p in _all_projects:
+                if _p["slug"] == _project_slug:
+                    _project_path = _p["path"]
+                    break
+        # Generate topic-scoped settings.local.json for non-owner
         if not _access.is_owner:
-            # Find CWD from session manager
+            # Find CWD for current topic from session manager
             _cwd = "/home/agent"
-            try:
-                _bindings = session_manager.get_bindings(user.id)
-                for _tid, _wid in _bindings.items():
-                    _ws = session_manager.get_window_state(_wid)
-                    if _ws and _ws.get("cwd"):
-                        _cwd = _ws["cwd"]
-                        break
-            except Exception:
-                pass
-            generate_settings_local(_access, _cwd)
+            _wid = session_manager.get_window_for_thread(user.id, _thread_id)
+            if _wid:
+                _ws = session_manager.window_states.get(_wid)
+                if _ws and hasattr(_ws, "cwd") and _ws.cwd:
+                    _cwd = _ws.cwd
+            await generate_settings_local(
+                _access, _cwd,
+                current_project_slug=_project_slug,
+                current_project_path=_project_path,
+            )
         # Write current user info for pre-action-check.sh
         _user_env = f"/tmp/brain-current-user-{_brain_ctx}"
         try:
             with open(_user_env, "w") as _f:
-                _f.write(f"BRAIN_CURRENT_USER_ID={user.id}\nBRAIN_CURRENT_USER_NAME={_access.display_name or user.first_name}\n")
+                _f.write(f"BRAIN_CURRENT_USER_ID={user.id}\nBRAIN_CURRENT_USER_NAME={_access.display_name or user.first_name}\nBRAIN_CURRENT_USER_CAN_DELETE={str(_access.can_delete).lower()}\n")
         except OSError:
             pass
 
