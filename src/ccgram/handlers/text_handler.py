@@ -1,4 +1,3 @@
-import os
 """Text message handling — step functions for the text_handler orchestrator.
 
 Routes incoming text messages through a bool early-return chain:
@@ -580,22 +579,6 @@ async def handle_text_message(
             context.bot, user.id, thread_id, window_id, text, message
         )
         return
-
-    # BRAIN FORK: identify non-owner user for Claude
-    _brain_ctx = os.getenv("BRAIN_CONTEXT", "")
-    if _brain_ctx and text:
-        _user_file = f"/tmp/brain-current-user-{_brain_ctx}"
-        try:
-            with open(_user_file) as _uf:
-                _udata = dict(line.strip().split("=", 1) for line in _uf if "=" in line)
-            _cur_name = _udata.get("BRAIN_CURRENT_USER_NAME", "")
-            # Check if non-owner (owner has only their own ID in ALLOWED_USERS first position)
-            _allowed = os.getenv("ALLOWED_USERS", "")
-            _owner_id = _allowed.split(",")[0].strip() if _allowed else ""
-            if str(user.id) != _owner_id and _cur_name:
-                text = f"[From: {_cur_name}]\n{text}"
-        except (OSError, ValueError):
-            pass
 
     # Forward message to window
     await _forward_message(window_id, user.id, thread_id, text, context.bot, message)
