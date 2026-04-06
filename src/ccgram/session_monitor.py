@@ -108,6 +108,10 @@ class NewWindowEvent:
     cwd: str
 
 
+# BRAIN FORK: dedup tracker per session (patch 36)
+_session_prev_prefix: dict[str, str] = {}
+
+
 class SessionMonitor:
     """Monitors Claude Code sessions for new assistant messages.
 
@@ -531,23 +535,19 @@ class SessionMonitor:
         else:
             self._pending_tools.pop(session_id, None)
 
-        _prev_tool_key = None
         for entry in agent_messages:
             if not entry.text:
                 continue
             # BRAIN FORK: skip user echo (user already sees their message in Telegram)
             if entry.role == "user":
                 continue
-            # BRAIN FORK: skip duplicate tool_use for same tool (patch 36)
-            # parse_entries generates two entries per tool call: tool_use (short) and
-            # tool_use+result (with details). Keep only the first one.
-            if entry.content_type == "tool_use" and entry.tool_name:
-                _tool_key = f"{entry.tool_name}:{entry.tool_use_id or ''}"
-                if _tool_key == _prev_tool_key:
-                    continue
-                _prev_tool_key = _tool_key
-            else:
-                _prev_tool_key = None
+            # BRAIN FORK: skip consecutive duplicate entries (patch 36)
+            # parse_entries generates two entries per event (short + detailed).
+            # Track last text prefix per session in module-level dict.
+            _text_prefix = entry.text[:25]
+            if _text_prefix == _session_prev_prefix.get(session_id):
+                continue
+            _session_prev_prefix[session_id] = _text_prefix
             new_messages.append(
                 NewMessage(
                     session_id=session_id,

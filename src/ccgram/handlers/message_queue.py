@@ -596,6 +596,9 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
     # BRAIN FORK: status tools (listening..., watching...) -> temp status message
     # Check all parts for __STATUS__ prefix (tool_use and tool_result)
     has_status = any(p.startswith("__STATUS__") for p in task.parts if p)
+    if not has_status and task.parts:
+        # Non-status content arrived: clear any lingering status message (Thinking...)
+        await _do_clear_status_message(bot, user_id, thread_id)
     if has_status:
         if task.content_type == "tool_result":
             # Tool result for status tool: don't show (transcription goes to Claude, not Telegram)
