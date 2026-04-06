@@ -384,7 +384,9 @@ STATUS_SPINNERS = frozenset(["·", "✻", "✽", "✶", "✳", "✢"])
 # Box-drawing range U+2500–U+257F and other known non-spinner symbols
 _BRAILLE_START = 0x2800
 _BRAILLE_END = 0x28FF
-_NON_SPINNER_RANGES = ((0x2500, 0x257F),)  # box-drawing characters
+# BRAIN FORK: added Block Elements range (U+2580-U+259F) -- Claude Code ASCII art logo
+# contains ▘ (U+2598) and ▝ (U+259D) which are NOT spinners
+_NON_SPINNER_RANGES = ((0x2500, 0x259F),)  # box-drawing + block elements
 _NON_SPINNER_CHARS = frozenset("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬>|+<=~")
 
 # Unicode categories that spinner characters typically belong to.
