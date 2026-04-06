@@ -387,7 +387,9 @@ _BRAILLE_END = 0x28FF
 # BRAIN FORK: added Block Elements range (U+2580-U+259F) -- Claude Code ASCII art logo
 # contains ▘ (U+2598) and ▝ (U+259D) which are NOT spinners
 _NON_SPINNER_RANGES = ((0x2500, 0x259F),)  # box-drawing + block elements
-_NON_SPINNER_CHARS = frozenset("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬>|+<=~")
+# BRAIN FORK: ● (U+25CF) is Claude Code bullet point for completed output, NOT spinner
+# ⎿ (U+23BF) is Claude Code indentation marker, NOT spinner
+_NON_SPINNER_CHARS = frozenset("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬>|+<=~●⎿")
 
 # Unicode categories that spinner characters typically belong to.
 # So = Symbol Other (✻, ✽, ✶, ✳, ✢, ☐, ✔, ☒)
