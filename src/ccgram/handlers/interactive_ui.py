@@ -58,6 +58,8 @@ _interactive_mode: dict[tuple[int, int], str] = {}
 
 # Cooldown to prevent flood when interactive sends fail repeatedly
 _send_cooldowns: dict[tuple[int, int], float] = {}
+_send_fail_counts: dict[tuple[int, int], int] = {}  # BRAIN FORK: retry limit for interactive UI
+_MAX_INTERACTIVE_RETRIES = 5  # auto-accept after 5 failed send attempts
 _SEND_RETRY_INTERVAL = 5.0  # seconds between retries for failed sends
 _DEAD_TOPIC_RETRY_INTERVAL = 60.0  # longer backoff when topic is deleted
 
@@ -466,8 +468,10 @@ async def handle_interactive_ui(
 
     # Send new message
     thread_kwargs: dict[str, int] = {}
-    # BRAIN FORK: skip thread_id for DM (positive chat_id)
-    if thread_id is not None and chat_id < 0:
+    # BRAIN FORK: skip thread_id for DM (positive chat_id) and General topic (thread=1)
+    # General topic in forum groups: message_thread_id=1 returns "thread not found".
+    # Must omit message_thread_id entirely for General topic (same as message_sender.py).
+    if thread_id is not None and thread_id != 1 and chat_id < 0:
         thread_kwargs["message_thread_id"] = thread_id
 
     logger.info(
@@ -497,6 +501,17 @@ async def handle_interactive_ui(
             _send_cooldowns[ikey] = (
                 now + _DEAD_TOPIC_RETRY_INTERVAL - _SEND_RETRY_INTERVAL
             )
+            # BRAIN FORK: count failures, auto-accept after max retries (patch 43)
+            _send_fail_counts[ikey] = _send_fail_counts.get(ikey, 0) + 1
+            if _send_fail_counts[ikey] >= _MAX_INTERACTIVE_RETRIES:
+                logger.warning(
+                    "Interactive UI failed %d times for window %s, auto-accepting",
+                    _send_fail_counts[ikey], window_id,
+                )
+                _send_fail_counts.pop(ikey, None)
+                _send_cooldowns.pop(ikey, None)
+                await tmux_manager.send_keys(window_id, "Enter", raw=True)
+                return True
         else:
             logger.error("Failed to send interactive UI to %s: %s", chat_id, e)
     except TelegramError as e:
@@ -505,6 +520,7 @@ async def handle_interactive_ui(
         _interactive_msgs[ikey] = sent.message_id
         _interactive_mode[ikey] = window_id
         _send_cooldowns.pop(ikey, None)
+        _send_fail_counts.pop(ikey, None)  # reset on success
     return sent is not None
 
 
@@ -518,6 +534,7 @@ async def clear_interactive_msg(
     msg_id = _interactive_msgs.pop(ikey, None)
     _interactive_mode.pop(ikey, None)
     _send_cooldowns.pop(ikey, None)
+    _send_fail_counts.pop(ikey, None)
     logger.debug(
         "Clear interactive msg: user=%d, thread=%s, msg_id=%s",
         user_id,
