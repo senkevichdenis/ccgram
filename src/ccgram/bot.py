@@ -1349,7 +1349,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         _user_env = f"/tmp/brain-current-user-{_brain_ctx}"
         try:
             with open(_user_env, "w") as _f:
-                _f.write(f"BRAIN_CURRENT_USER_ID={user.id}\nBRAIN_CURRENT_USER_NAME={_access.display_name or user.first_name}\nBRAIN_CURRENT_USER_CAN_WRITE={str(_access.can_write).lower()}\nBRAIN_CURRENT_USER_CAN_DELETE={str(_access.can_delete).lower()}\n")
+                _f.write(f"BRAIN_CURRENT_USER_ID={user.id}\nBRAIN_CURRENT_USER_NAME={_access.display_name or user.first_name}\nBRAIN_CURRENT_USER_CAN_WRITE={str(_access.can_write).lower()}\nBRAIN_CURRENT_USER_CAN_DELETE={str(_access.can_delete).lower()}\nBRAIN_CURRENT_THREAD_ID={_thread_id}\n")
         except OSError:
             pass
 
