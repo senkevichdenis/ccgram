@@ -153,6 +153,9 @@ async def rate_limit_send_message(
     Combines rate_limit_send() + _send_with_fallback() for convenience.
     Returns the sent Message on success, None on failure.
     """
+    # BRAIN FORK: DM chats (positive chat_id) don't support message_thread_id
+    if chat_id > 0:
+        kwargs.pop("message_thread_id", None)
     await rate_limit_send(chat_id)
     return await _send_with_fallback(bot, chat_id, text, **kwargs)
 
@@ -202,7 +205,8 @@ async def safe_send(
 ) -> None:
     """Send message with entity formatting, falling back to plain text on failure."""
     kwargs.setdefault("link_preview_options", NO_LINK_PREVIEW)
-    if message_thread_id is not None and message_thread_id != 1:
+    # Skip message_thread_id for DM chats (positive chat_id) and General topic (thread_id=1)
+    if message_thread_id is not None and message_thread_id != 1 and chat_id < 0:
         kwargs.setdefault("message_thread_id", message_thread_id)
 
     async def _send(text: str, **kw: Any) -> Message:

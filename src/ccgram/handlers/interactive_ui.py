@@ -424,7 +424,8 @@ async def handle_interactive_ui(
             await tmux_manager.send_keys(window_id, "Escape", raw=True)
             chat_id = session_manager.resolve_chat_id(user_id, thread_id)
             thread_kwargs: dict[str, int] = {}
-            if thread_id is not None:
+            # BRAIN FORK: skip thread_id for DM (positive chat_id)
+            if thread_id is not None and chat_id < 0:
                 thread_kwargs["message_thread_id"] = thread_id
             with contextlib.suppress(TelegramError):
                 await bot.send_message(
@@ -433,6 +434,13 @@ async def handle_interactive_ui(
                     **thread_kwargs,
                 )
             return True
+
+    # BRAIN FORK: DM windows skip interactive UI (trust auto-accepted via readiness probe)
+    _ws = session_manager.get_window_state(window_id)
+    if _ws and _ws.is_dm:
+        logger.debug("DM window %s: skip interactive UI, auto-accepting", window_id)
+        await tmux_manager.send_keys(window_id, "Enter", raw=True)
+        return True
 
     # BRAIN FORK: clean UI -- parse options, build simple buttons (patch 7 revised)
     ikey = (user_id, thread_id or 0)
@@ -458,7 +466,8 @@ async def handle_interactive_ui(
 
     # Send new message
     thread_kwargs: dict[str, int] = {}
-    if thread_id is not None:
+    # BRAIN FORK: skip thread_id for DM (positive chat_id)
+    if thread_id is not None and chat_id < 0:
         thread_kwargs["message_thread_id"] = thread_id
 
     logger.info(

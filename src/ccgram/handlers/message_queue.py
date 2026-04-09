@@ -235,7 +235,17 @@ def _can_merge_tasks(base: MessageTask, candidate: MessageTask) -> bool:
     # - tool_result: edits previous message, merging would cause order issues
     if base.content_type in ("tool_use", "tool_result"):
         return False
-    return candidate.content_type not in ("tool_use", "tool_result")
+    if candidate.content_type in ("tool_use", "tool_result"):
+        return False
+    # BRAIN FORK: __STATUS__ tasks must not merge with real content.
+    # Status messages (Thinking..., Listening...) are temporary and disappear.
+    # If merged with real text, _process_content_task treats the whole batch
+    # as status and the real answer is silently dropped.
+    base_has_status = any(p.startswith("__STATUS__") for p in base.parts if p)
+    cand_has_status = any(p.startswith("__STATUS__") for p in candidate.parts if p)
+    if base_has_status or cand_has_status:
+        return False
+    return True
 
 
 async def _merge_content_tasks(
@@ -427,7 +437,7 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
             bot,
             chat_id,
             batch_text,
-            **_send_kwargs(task.thread_id),  # type: ignore[arg-type]
+            **_send_kwargs(task.thread_id, chat_id=chat_id),  # type: ignore[arg-type]
         )
         if sent:
             batch.telegram_msg_id = sent.message_id
@@ -462,7 +472,7 @@ async def _flush_batch(bot: Bot, user_id: int, thread_id_or_0: int) -> None:
             bot,
             chat_id,
             batch_text,
-            **_send_kwargs(thread_id),  # type: ignore[arg-type]
+            **_send_kwargs(thread_id, chat_id=chat_id),  # type: ignore[arg-type]
         )
         return
 
@@ -580,8 +590,14 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
             )
 
 
-def _send_kwargs(thread_id: int | None) -> dict[str, int]:
-    """Build message_thread_id kwargs for bot.send_message()."""
+def _send_kwargs(thread_id: int | None, chat_id: int = 0) -> dict[str, int]:
+    """Build message_thread_id kwargs for bot.send_message().
+    
+    BRAIN FORK: skip message_thread_id for DM chats (positive chat_id).
+    DM chats don't support Telegram forum topics.
+    """
+    if chat_id > 0:
+        return {}
     if thread_id is not None and thread_id != 1:
         return {"message_thread_id": thread_id}
     return {}
@@ -652,7 +668,7 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
             bot,
             chat_id,
             part,
-            **_send_kwargs(task.thread_id),  # type: ignore[arg-type]
+            **_send_kwargs(task.thread_id, chat_id=chat_id),  # type: ignore[arg-type]
         )
 
         if sent:
@@ -813,7 +829,7 @@ async def _do_send_status_message(
         chat_id,
         text,
         reply_markup=keyboard,
-        **_send_kwargs(thread_id),  # type: ignore[arg-type]
+        **_send_kwargs(thread_id, chat_id=chat_id),  # type: ignore[arg-type]
     )
     if sent:
         _status_msg_info[skey] = (sent.message_id, window_id, text)

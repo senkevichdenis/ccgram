@@ -2,9 +2,10 @@
 
 Checks user permissions via Supabase (schema brain) before forwarding
 messages to Claude Code. Generates settings.local.json with deny rules
-per-user per-project.
+per-user per-project, scoped to the current Telegram topic.
 
 BRAIN FORK: added for multi-user permission management.
+Topic scoping: each topic = one project. User can only work with that project.
 """
 
 import json
@@ -28,42 +29,12 @@ BRAIN_CONTEXT = os.getenv("BRAIN_CONTEXT", "")
 _ignored_raw = os.getenv("CCGRAM_IGNORED_TOPICS", "")
 IGNORED_TOPICS: set[int] = {int(t.strip()) for t in _ignored_raw.split(",") if t.strip()} if _ignored_raw else set()
 
-# --- Thread-to-project mapping cache ---
-
-_thread_project_cache: dict[int, tuple[float, str | None]] = {}
-
-
-async def get_project_for_thread(thread_id: int) -> str | None:
-    """Get project_slug for a thread_id from Supabase (cached)."""
-    if thread_id in _thread_project_cache:
-        ts, slug = _thread_project_cache[thread_id]
-        if time.time() - ts < _CACHE_TTL:
-            return slug
-
-    if not SUPABASE_URL or not SUPABASE_KEY or not BRAIN_CONTEXT:
-        return None
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                f"{SUPABASE_URL}/rest/v1/rpc/get_brain_project_for_thread",
-                headers=_headers(),
-                json={"p_thread_id": thread_id, "p_context": BRAIN_CONTEXT},
-            )
-            resp.raise_for_status()
-            slug = resp.json()
-            _thread_project_cache[thread_id] = (time.time(), slug)
-            return slug
-    except Exception as e:
-        logger.error("RBAC: failed to lookup project for thread", error=str(e), thread_id=thread_id)
-        return None
-
-
 # --- Cache ---
 
 _CACHE_TTL = 300  # 5 minutes
 _profile_cache: dict[int, tuple[float, dict[str, Any]]] = {}
-_project_cache: dict[tuple[int, str], tuple[float, str | None]] = {}
+_all_projects_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_thread_project_cache: dict[int, tuple[float, str | None]] = {}
 
 
 def _get_cached_profile(telegram_id: int) -> dict[str, Any] | None:
@@ -82,12 +53,10 @@ def invalidate_cache(telegram_id: int | None = None) -> None:
     """Clear cache for a specific user or all users."""
     if telegram_id is None:
         _profile_cache.clear()
-        _project_cache.clear()
+        _all_projects_cache.clear()
+        _thread_project_cache.clear()
     else:
         _profile_cache.pop(telegram_id, None)
-        keys_to_remove = [k for k in _project_cache if k[0] == telegram_id]
-        for k in keys_to_remove:
-            _project_cache.pop(k, None)
 
 
 # --- Supabase RPC calls ---
@@ -120,6 +89,64 @@ async def _fetch_user_profile(telegram_id: int) -> dict[str, Any] | None:
             return data
     except Exception as e:
         logger.error("RBAC fetch failed", error=str(e), telegram_id=telegram_id)
+        return None
+
+
+async def get_all_projects(context: str | None = None) -> list[dict[str, Any]]:
+    """Get all projects for a context from Supabase (cached).
+    Returns list of {slug, path, thread_id}.
+    """
+    ctx = context or BRAIN_CONTEXT
+    if not ctx:
+        return []
+
+    if ctx in _all_projects_cache:
+        ts, projects = _all_projects_cache[ctx]
+        if time.time() - ts < _CACHE_TTL:
+            return projects
+
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/get_brain_all_projects",
+                headers=_headers(),
+                json={"p_context": ctx},
+            )
+            resp.raise_for_status()
+            projects = resp.json() or []
+            _all_projects_cache[ctx] = (time.time(), projects)
+            return projects
+    except Exception as e:
+        logger.error("RBAC: failed to fetch all projects", error=str(e))
+        return []
+
+
+async def get_project_for_thread(thread_id: int) -> str | None:
+    """Get project_slug for a thread_id from Supabase (cached)."""
+    if thread_id in _thread_project_cache:
+        ts, slug = _thread_project_cache[thread_id]
+        if time.time() - ts < _CACHE_TTL:
+            return slug
+
+    if not SUPABASE_URL or not SUPABASE_KEY or not BRAIN_CONTEXT:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/get_brain_project_for_thread",
+                headers=_headers(),
+                json={"p_thread_id": thread_id, "p_context": BRAIN_CONTEXT},
+            )
+            resp.raise_for_status()
+            slug = resp.json()
+            _thread_project_cache[thread_id] = (time.time(), slug)
+            return slug
+    except Exception as e:
+        logger.error("RBAC: failed to lookup project for thread", error=str(e), thread_id=thread_id)
         return None
 
 
@@ -173,6 +200,8 @@ class AccessResult:
         project_slug: str | None = None,
         display_name: str | None = None,
         permissions: list[str] | None = None,
+        telegram_id: int | None = None,
+        user_projects: dict[str, Any] | None = None,
     ):
         self.allowed = allowed
         self.reason = reason
@@ -182,6 +211,8 @@ class AccessResult:
         self.project_slug = project_slug
         self.display_name = display_name
         self.permissions = permissions or []
+        self.telegram_id = telegram_id
+        self.user_projects = user_projects or {}
 
 
 async def check_access(
@@ -195,7 +226,7 @@ async def check_access(
     profile = await get_user_profile(telegram_id)
 
     if profile is None:
-        return AccessResult(allowed=False, reason="user_not_found")
+        return AccessResult(allowed=False, reason="user_not_found", telegram_id=telegram_id)
 
     is_owner = profile.get("is_owner", False)
     display_name = profile.get("display_name", "unknown")
@@ -212,6 +243,8 @@ async def check_access(
             project_slug=project_slug,
             display_name=display_name,
             permissions=permissions,
+            telegram_id=telegram_id,
+            user_projects=projects,
         )
 
     if project_slug is not None:
@@ -222,6 +255,8 @@ async def check_access(
                 reason="no_project_access",
                 display_name=display_name,
                 project_slug=project_slug,
+                telegram_id=telegram_id,
+                user_projects=projects,
             )
         return AccessResult(
             allowed=True,
@@ -232,28 +267,73 @@ async def check_access(
             project_slug=project_slug,
             display_name=display_name,
             permissions=permissions,
+            telegram_id=telegram_id,
+            user_projects=projects,
         )
 
-    # No project specified, user exists and is active
+    # No project specified (General/informational topic), user exists and is active
     return AccessResult(
         allowed=True,
         reason="member",
         is_owner=False,
         display_name=display_name,
         permissions=permissions,
+        telegram_id=telegram_id,
+        user_projects=projects,
     )
 
 
-# --- settings.local.json generation ---
+# --- Topic-scoped settings.local.json generation ---
 
-def generate_settings_local(access: AccessResult, cwd: str) -> None:
-    """Write .claude/settings.local.json with deny rules for this user.
+def _expand_path(path: str) -> str:
+    """Expand ~/projects/... to /home/agent/projects/..."""
+    if path.startswith("~/"):
+        return f"/home/agent/{path[2:]}"
+    return path
+
+
+def _project_deny_all(project_path: str, project_slug: str) -> list[str]:
+    """Deny rules that block ALL access to a project (read + write + tools).
+    Uses universal Bash pattern to block ANY command containing project path."""
+    path = _expand_path(project_path)
+    return [
+        f"Read(//{path}/**)",
+        f"Edit(//{path}/**)",
+        f"Write(//{path}/**)",
+        f"Glob(//{path}/**)",
+        f"Grep(//{path}/**)",
+    ]
+
+
+def _project_deny_write(project_path: str, project_slug: str) -> list[str]:
+    """Deny rules that block WRITE access to a project (read allowed)."""
+    path = _expand_path(project_path)
+    return [
+        f"Edit(//{path}/**)",
+        f"Write(//{path}/**)",
+        f"Bash(rm */{project_slug}/*)",
+        f"Bash(mv */{project_slug}/*)",
+        f"Bash(git -C */{project_slug} commit*)",
+        f"Bash(git -C */{project_slug} push*)",
+    ]
+
+
+async def generate_settings_local(
+    access: AccessResult,
+    cwd: str,
+    current_project_slug: str | None = None,
+    current_project_path: str | None = None,
+) -> None:
+    """Write .claude/settings.local.json with topic-scoped deny rules.
+
+    Topic scoping: user can only work with the project bound to current topic.
+    Other projects are blocked even if user has access to them elsewhere.
 
     Owner: no file generated (full access).
-    Member: deny rules based on can_write/can_delete and permissions.
+    Non-owner in project topic: only current project accessible.
+    Non-owner in General/informational: read own projects, no writes anywhere.
     """
     if access.is_owner:
-        # Remove any leftover settings.local.json from previous restricted user
         settings_path = Path(cwd) / ".claude" / "settings.local.json"
         if settings_path.exists():
             try:
@@ -262,31 +342,62 @@ def generate_settings_local(access: AccessResult, cwd: str) -> None:
                 pass
         return
 
+    all_projects = await get_all_projects()
     deny_rules: list[str] = []
 
-    # If no write access to this project
-    if not access.can_write:
-        deny_rules.extend([
-            "Edit(*)",
-            "Write(*)",
-            "Bash(git commit *)",
-            "Bash(git push *)",
-            "Bash(git add *)",
-        ])
-
-    # If no delete access
-    if not access.can_delete:
+    if current_project_slug is None:
+        # --- General / informational topic ---
+        # No file modifications anywhere.
+        # Edit(**)/Write(**) do NOT block absolute paths outside CWD.
+        # Must explicitly deny each project path.
         deny_rules.extend([
             "Bash(rm *)",
-            "Bash(git push --force *)",
-            "Bash(git reset *)",
+            "Bash(mv *)",
+            "Bash(git commit*)",
+            "Bash(git push*)",
+            "Bash(pnpm install*)",
+            "Bash(npm install*)",
         ])
+        for p in all_projects:
+            path = _expand_path(p["path"])
+            if p["slug"] in access.user_projects:
+                # User has access: allow read, block write
+                deny_rules.extend([
+                    f"Edit(//{path}/**)",
+                    f"Write(//{path}/**)",
+                ])
+            else:
+                # No access: block everything
+                deny_rules.extend(_project_deny_all(p["path"], p["slug"]))
+    else:
+        # --- Project topic ---
+        # Block ALL other projects (even if user has access elsewhere)
+        for p in all_projects:
+            if p["slug"] == current_project_slug:
+                continue
+            deny_rules.extend(_project_deny_all(p["path"], p["slug"]))
 
-    # If no deploy permission
+        # Current project: apply can_write/can_delete restrictions
+        if not access.can_write and current_project_path:
+            deny_rules.extend(_project_deny_write(current_project_path, current_project_slug))
+
+        if not access.can_delete:
+            deny_rules.extend([
+                "Bash(rm *)",
+                "Bash(git push --force *)",
+                "Bash(git reset *)",
+            ])
+
+    # Always block shared/ write for non-owner
+    deny_rules.extend([
+        "Write(//home/agent/shared/**)",
+        "Edit(//home/agent/shared/**)",
+    ])
+
+    # MCP restrictions based on permissions
     if "deploy" not in access.permissions:
         deny_rules.append("Bash(vercel *)")
 
-    # If no MCP write permission
     if "mcp:write" not in access.permissions:
         deny_rules.extend([
             "mcp__supabase__apply_migration",
@@ -296,7 +407,6 @@ def generate_settings_local(access: AccessResult, cwd: str) -> None:
             "mcp__slack__slack_post_message",
         ])
 
-    # If no MCP destroy permission
     if "mcp:destroy" not in access.permissions:
         deny_rules.extend([
             "mcp__supabase__execute_sql",
@@ -306,19 +416,27 @@ def generate_settings_local(access: AccessResult, cwd: str) -> None:
     if not deny_rules:
         return
 
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    unique_deny: list[str] = []
+    for rule in deny_rules:
+        if rule not in seen:
+            seen.add(rule)
+            unique_deny.append(rule)
+
     settings_dir = Path(cwd) / ".claude"
     settings_dir.mkdir(exist_ok=True)
 
-    settings = {"permissions": {"deny": deny_rules}}
+    settings = {"permissions": {"deny": unique_deny}}
 
     settings_path = settings_dir / "settings.local.json"
     try:
         settings_path.write_text(json.dumps(settings, indent=2))
         logger.info(
-            "RBAC settings.local.json written",
+            "RBAC settings.local.json written (topic-scoped)",
             user=access.display_name,
-            project=access.project_slug,
-            deny_count=len(deny_rules),
+            project=current_project_slug or "non-project",
+            deny_count=len(unique_deny),
             path=str(settings_path),
         )
     except OSError as e:

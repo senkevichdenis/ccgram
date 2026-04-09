@@ -118,6 +118,7 @@ class WindowState:
     approval_mode: str = DEFAULT_APPROVAL_MODE
     batch_mode: str = DEFAULT_BATCH_MODE
     external: bool = False
+    is_dm: bool = False  # BRAIN FORK: DM window, skip interactive UI and recovery
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -138,6 +139,8 @@ class WindowState:
             d["batch_mode"] = self.batch_mode
         if self.external:
             d["external"] = True
+        if self.is_dm:
+            d["is_dm"] = True
         return d
 
     @classmethod
@@ -1552,11 +1555,13 @@ class SessionManager:
             return False, "Window not found (may have been closed)"
 
         # Readiness check: wait for Claude to show input prompt
-        ready = await self._wait_for_readiness(window_id, timeout=30.0)
+        ready = await self._wait_for_readiness(window_id, timeout=90.0)
         if not ready:
             logger.warning(
-                "Window %s not ready after 30s, sending anyway", window_id
+                "Window %s not ready after 90s, message NOT sent", window_id
             )
+            # BRAIN FORK: don't send to bash prompt, message would be lost
+            return False, "Сессия загружается. Попробуй через минуту." 
 
         success = await tmux_manager.send_keys(window.window_id, text, raw=raw)
         if success:

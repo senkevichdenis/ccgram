@@ -230,11 +230,11 @@ async def _send_typing_throttled(bot: Bot, user_id: int, thread_id: int | None) 
     ts.last_typing_sent = now
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     with contextlib.suppress(TelegramError):
-        await bot.send_chat_action(
-            chat_id=chat_id,
-            message_thread_id=thread_id,
-            action=ChatAction.TYPING,
-        )
+        # BRAIN FORK: skip message_thread_id for DM (positive chat_id)
+        action_kwargs: dict = {"chat_id": chat_id, "action": ChatAction.TYPING}
+        if chat_id < 0 and thread_id is not None:
+            action_kwargs["message_thread_id"] = thread_id
+        await bot.send_chat_action(**action_kwargs)
 
 
 def clear_autoclose_timer(user_id: int, thread_id: int) -> None:
@@ -528,6 +528,15 @@ async def _handle_no_status(
         _start_autoclose_timer(user_id, thread_id, "done", now)
         _get_topic_state(user_id, thread_id).last_typing_sent = None
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+        # BRAIN FORK: notify user that Claude Code session ended
+        try:
+            await rate_limit_send_message(
+                bot, chat_id,
+                "Сессия завершилась. Напиши ещё раз, я перезапущусь.",
+                message_thread_id=thread_id,
+            )
+        except Exception:
+            pass
     elif ws.has_seen_status:
         await _transition_to_idle(
             bot, user_id, window_id, thread_id, chat_id, display, notif_mode
@@ -924,6 +933,11 @@ async def _handle_dead_window_notification(
     bot: Bot, user_id: int, thread_id: int, wid: str
 ) -> None:
     """Send proactive recovery notification for a dead window (once per death)."""
+    # BRAIN FORK: DM windows skip recovery (recreated automatically on next message)
+    _ws = session_manager.get_window_state(wid)
+    if _ws and _ws.is_dm:
+        logger.debug("DM window %s: skip recovery notification", wid)
+        return
     dead_key = (user_id, thread_id, wid)
     if dead_key in _dead_notified:
         return

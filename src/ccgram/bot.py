@@ -41,6 +41,7 @@ from telegram import (
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, Conflict, NetworkError, RetryAfter, TelegramError
 from telegram.ext import (
+    ChatMemberHandler,
     Application,
     CallbackQueryHandler,
     CommandHandler,
@@ -2006,6 +2007,19 @@ def create_bot() -> Application:
 
     application.add_error_handler(_error_handler)
     application.add_handler(CommandHandler("new", new_command, filters=_group_filter))
+    # BRAIN FORK: DM handlers (private chat) - must be BEFORE group handlers
+    from .handlers.dm_handler import dm_start_handler, dm_text_handler, my_chat_member_handler
+    _private_filter = filters.ChatType.PRIVATE
+    application.add_handler(
+        CommandHandler("start", dm_start_handler, filters=_private_filter)
+    )
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & _private_filter, dm_text_handler)
+    )
+    application.add_handler(
+        ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER)
+    )
+
     application.add_handler(
         CommandHandler("start", new_command, filters=_group_filter)  # compat alias
     )
