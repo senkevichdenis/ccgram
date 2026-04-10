@@ -231,8 +231,9 @@ async def _send_typing_throttled(bot: Bot, user_id: int, thread_id: int | None) 
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     with contextlib.suppress(TelegramError):
         # BRAIN FORK: skip message_thread_id for DM (positive chat_id)
+        # and General topic (thread_id=1): API rejects message_thread_id=1
         action_kwargs: dict = {"chat_id": chat_id, "action": ChatAction.TYPING}
-        if chat_id < 0 and thread_id is not None:
+        if chat_id < 0 and thread_id is not None and thread_id != 1:
             action_kwargs["message_thread_id"] = thread_id
         await bot.send_chat_action(**action_kwargs)
 
@@ -947,6 +948,8 @@ async def _handle_dead_window_notification(
     # no more tool_result edits will arrive).
 
     clear_tool_msg_ids_for_topic(user_id, thread_id)
+    # BRAIN FORK (patch 48): clear stale Thinking status when window dies
+    await enqueue_status_update(bot, user_id, wid, None, thread_id=thread_id)
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     display = session_manager.get_display_name(wid)
     await update_topic_emoji(bot, chat_id, thread_id, "dead", display)

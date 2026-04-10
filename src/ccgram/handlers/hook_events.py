@@ -220,6 +220,8 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
         if _sid:
             mon.clear_activity(_sid)
     stop_reason = event.data.get("stop_reason", "")
+    # BRAIN FORK (patch 48): reset failure counter on successful stop
+    _stop_failure_counts.pop(event.window_key, None)
     logger.debug(
         "Hook stop: window_key=%s, stop_reason=%s",
         event.window_key,
@@ -395,8 +397,15 @@ async def _handle_teammate_idle(event: HookEvent, bot: Bot) -> None:
         await enqueue_status_update(bot, user_id, window_id, text, thread_id=thread_id)
 
 
+# BRAIN FORK (patch 48): auto-recovery for consecutive API failures
+_stop_failure_counts: dict[str, int] = {}  # window_key -> consecutive failure count
+_stop_failure_cooldowns: dict[str, float] = {}  # window_key -> last auto-restart time
+_STOP_FAILURE_THRESHOLD = 3  # auto-restart after N consecutive failures
+_STOP_FAILURE_COOLDOWN = 300.0  # 5 min cooldown between auto-restarts
+
+
 async def _handle_stop_failure(event: HookEvent, bot: Bot) -> None:
-    """Handle a StopFailure event — alert on API error termination."""
+    """Handle a StopFailure event — alert on API error, auto-restart on repeated failures."""
     from .message_sender import rate_limit_send_message
 
     users = _resolve_users_for_window_key(event.window_key)
@@ -418,6 +427,50 @@ async def _handle_stop_failure(event: HookEvent, bot: Bot) -> None:
     for user_id, thread_id, _window_id in users:
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
         await rate_limit_send_message(bot, chat_id, text, message_thread_id=thread_id)
+
+    # BRAIN FORK (patch 48): track consecutive failures and auto-restart
+    import time as _time
+    wkey = event.window_key
+    _stop_failure_counts[wkey] = _stop_failure_counts.get(wkey, 0) + 1
+    count = _stop_failure_counts[wkey]
+    logger.warning("StopFailure #%d for %s", count, wkey)
+
+    if count >= _STOP_FAILURE_THRESHOLD:
+        last_restart = _stop_failure_cooldowns.get(wkey, 0.0)
+        if _time.monotonic() - last_restart < _STOP_FAILURE_COOLDOWN:
+            logger.info("Auto-restart cooldown active for %s, skipping", wkey)
+            return
+
+        _stop_failure_cooldowns[wkey] = _time.monotonic()
+        _stop_failure_counts[wkey] = 0
+
+        # Extract context and window_id from window_key (format: "context:@id")
+        parts = wkey.split(":", 1)
+        if len(parts) == 2:
+            ctx, wid = parts
+            logger.warning("Auto-restarting stuck session %s after %d failures", wkey, count)
+
+            # Notify user
+            for user_id, thread_id, _ in users:
+                chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+                await rate_limit_send_message(
+                    bot, chat_id,
+                    "Сессия зависла на ошибке API. Перезапускаю...",
+                    message_thread_id=thread_id,
+                )
+
+            # Restart via script (--silent --no-ccgram-restart to avoid killing ourselves)
+            import asyncio, subprocess
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "/home/agent/scripts/restart-claude.sh", ctx, wid,
+                    "--silent", "--no-ccgram-restart",
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(proc.wait(), timeout=90)
+                logger.info("Auto-restart completed for %s (exit=%s)", wkey, proc.returncode)
+            except (asyncio.TimeoutError, OSError) as e:
+                logger.error("Auto-restart failed for %s: %s", wkey, e)
 
 
 async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
