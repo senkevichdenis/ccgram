@@ -448,26 +448,19 @@ def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | 
     else:
         scan_start = 0
 
-    # BRAIN FORK: first check if Claude is idle (prompt visible near bottom separators).
-    # ScreenBuffer may split long separators across multiple lines, so scan
-    # bottom 8 lines for prompt near any separator. If found, Claude is idle.
-    # BUT: if there's a spinner ABOVE the separator, Claude is active (thinking/compacting).
-    bottom_lines = lines[max(scan_start, len(lines) - 8):]
-    has_separator = any(_is_separator(l) for l in bottom_lines)
-    if has_separator:
-        has_prompt = any(l.strip() and l.strip()[0] == "\u276f" for l in bottom_lines)
+    # BRAIN FORK (patch 48): if prompt is visible in chrome area, Claude is idle.
+    # Uses find_chrome_boundary() to locate the chrome (between separators at bottom).
+    # Any spinner characters ABOVE the boundary are historical output, not active status.
+    # Previous code checked bottom 8 lines flat and was fooled by completed cooking
+    # indicators like 'Sauteed for 1m 4s' that contain STATUS_SPINNERS characters.
+    boundary = find_chrome_boundary(lines)
+    if boundary is not None:
+        chrome_lines = lines[boundary:]
+        has_prompt = any(
+            l.strip() and l.strip()[0] == '\u276f' for l in chrome_lines
+        )
         if has_prompt:
-            # Check if spinner exists above the top separator in bottom region
-            has_spinner_above = False
-            for l in bottom_lines:
-                if _is_separator(l):
-                    break
-                s = l.strip()
-                if s and is_likely_spinner(s[0]):
-                    has_spinner_above = True
-                    break
-            if not has_spinner_above:
-                return None  # Claude is truly idle
+            return None  # Claude is truly idle -- prompt visible in chrome
 
     # Scan separators from bottom up within the scan range.
     # Claude Code 4.6 renders two separators around the prompt line;
