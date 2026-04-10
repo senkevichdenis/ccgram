@@ -459,8 +459,14 @@ def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | 
         has_prompt = any(
             l.strip() and l.strip()[0] == '\u276f' for l in chrome_lines
         )
-        if has_prompt:
-            return None  # Claude is truly idle -- prompt visible in chrome
+        # esc to interrupt in footer means Claude is actively working.
+        # Claude Code 4.6 shows prompt in chrome even while working;
+        # the footer text is the reliable idle/active discriminator.
+        is_interruptible = any(
+            "esc to interrupt" in l.lower() for l in chrome_lines
+        )
+        if has_prompt and not is_interruptible:
+            return None  # Claude is truly idle -- prompt visible, no active work
 
     # Scan separators from bottom up within the scan range.
     # Claude Code 4.6 renders two separators around the prompt line;
@@ -479,6 +485,14 @@ def parse_status_line(pane_text: str, *, pane_rows: int | None = None) -> str | 
             if is_likely_spinner(candidate[0]):
                 return candidate[1:].strip()
             break  # non-blank, non-spinner → stop looking above this separator
+
+    # Claude Code 4.6: when spinner scrolled off-screen during streaming,
+    # "esc to interrupt" in chrome footer is the only active-work signal.
+    # Return a synthetic status so the polling loop treats this as active.
+    if boundary is not None:
+        chrome_lines = lines[boundary:]
+        if any("esc to interrupt" in l.lower() for l in chrome_lines):
+            return "Working..."
 
     return None
 
