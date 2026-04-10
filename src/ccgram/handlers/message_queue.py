@@ -840,9 +840,14 @@ async def _do_clear_status_message(
     user_id: int,
     thread_id_or_0: int = 0,
 ) -> None:
-    """Delete the status message for a user (internal, called from worker)."""
+    """Delete the status message for a user (internal, called from worker).
+
+    BRAIN FORK (patch 48): get() before delete, conditional pop() in finally.
+    Prevents tracking loss on RetryAfter and protects newer entries from
+    being removed if a new status was sent during the delete await.
+    """
     skey = (user_id, thread_id_or_0)
-    info = _status_msg_info.pop(skey, None)
+    info = _status_msg_info.get(skey)
     if info:
         msg_id = info[0]
         thread_id: int | None = thread_id_or_0 if thread_id_or_0 != 0 else None
@@ -851,6 +856,9 @@ async def _do_clear_status_message(
             await bot.delete_message(chat_id=chat_id, message_id=msg_id)
         except TelegramError as e:
             logger.debug("Failed to delete status message %s: %s", msg_id, e)
+        finally:
+            if _status_msg_info.get(skey) is info:
+                _status_msg_info.pop(skey, None)
 
 
 async def enqueue_content_message(
