@@ -197,6 +197,10 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
     Edits the status message in-place to "Ready" (dedup catches identical
     text) and sets the topic emoji to idle without an intermediate active
     flicker.  Muted/errors_only windows get their status cleared instead.
+
+    BRAIN FORK (patch 53): also clears stale status for other users who
+    share the same thread_id through different windows, if those windows
+    are idle (no recent transcript activity).
     """
     from .callback_data import IDLE_STATUS_TEXT
     from .message_queue import enqueue_status_update
@@ -232,6 +236,43 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
         await enqueue_status_update(
             bot, user_id, window_id, status_text, thread_id=thread_id
         )
+
+    # BRAIN FORK (patch 53): clear stale status for sibling users in shared topics.
+    # When two users share a thread (e.g. thread_id=6 via windows @41 and @29),
+    # Stop for @29 only clears user_B's status. User_A's "Thinking..." stays stuck
+    # because @41 never fired Stop. Fix: find all other users bound to the same
+    # thread_id(s) and clear their status if their window is also idle.
+    import time as _time
+    _SIBLING_ACTIVITY_THRESHOLD = 10.0  # seconds, matches status_polling threshold
+
+    affected_thread_ids = {tid for _, tid, _ in users}
+    handled_pairs = {(uid, tid) for uid, tid, _ in users}
+
+    for thread_id in affected_thread_ids:
+        for other_uid, other_tid, other_wid in session_manager.iter_thread_bindings():
+            if other_tid != thread_id:
+                continue
+            if (other_uid, other_tid) in handled_pairs:
+                continue
+
+            # Check if the sibling window is actively working — don't clear if so
+            other_sid = session_manager.get_session_id_for_window(other_wid)
+            if other_sid and mon:
+                last_activity = mon.get_last_activity(other_sid)
+                if last_activity and (_time.monotonic() - last_activity) < _SIBLING_ACTIVITY_THRESHOLD:
+                    logger.debug(
+                        "Shared topic stop: skipping active sibling user=%d thread=%d window=%s",
+                        other_uid, other_tid, other_wid,
+                    )
+                    continue
+
+            logger.info(
+                "Shared topic stop: clearing stale status for sibling user=%d thread=%d window=%s",
+                other_uid, other_tid, other_wid,
+            )
+            await enqueue_status_update(
+                bot, other_uid, other_wid, None, thread_id=other_tid
+            )
 
 
 # Track active subagents per window: window_id -> {subagent_id -> name}
