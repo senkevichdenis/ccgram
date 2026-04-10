@@ -81,11 +81,14 @@ class TranscriptParser:
     # BRAIN FORK (patch 48): tools completely hidden (instant, no visible pause)
     SILENT_TOOLS: set[str] = {"TodoWrite", "TodoRead"}
 
+    # BRAIN FORK (patch 48): dedup consecutive identical tool summaries
+    _last_tool_summary: dict[str, str] = {}  # session_id -> last summary text
+
     # BRAIN FORK: bash commands to hide -> show Thinking... instead
     _HIDDEN_BASH: set[str] = {
         "ls", "cd", "cat", "grep", "find", "head", "tail", "echo", "touch",
         "chmod", "chown", "source", "export", "set", "unset", "sed", "awk",
-        "wc", "sort", "uniq", "python3", "python", "node",
+        "wc", "sort", "uniq", "python3", "python", "node", "curl",
     }
 
     # BRAIN FORK: bash commands starting with these git subcommands -> hide
@@ -94,8 +97,14 @@ class TranscriptParser:
     # BRAIN FORK: file extension removal for clean display
     @staticmethod
     def _strip_extension(path: str) -> str:
-        """Remove file extension for clean Telegram display."""
+        """Remove file extension and take basename for clean Telegram display.
+        
+        BRAIN FORK (patch 48): always basename. User wants short names:
+        'session' not 'ccgram/src/ccgram/session'.
+        """
         import os
+        # Take only the filename, not the full path
+        path = os.path.basename(path)
         name, ext = os.path.splitext(path)
         if ext in (".md", ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yaml", ".yml",
                     ".html", ".css", ".scss", ".sql", ".sh", ".env", ".txt", ".csv",
@@ -369,10 +378,9 @@ class TranscriptParser:
             summary = input_data.get("pattern", "")
         elif name == "Task":
             summary = input_data.get("description", "")
-        elif name == "WebFetch":
-            summary = input_data.get("url", "")
-        elif name == "WebSearch":
-            summary = input_data.get("query", "")
+        elif name in ("WebFetch", "WebSearch"):
+            # BRAIN FORK (patch 48): temporary status, disappears after completion
+            return "__STATUS__WebSearch"
         elif name == "TodoWrite":
             todos = input_data.get("todos", [])
             if isinstance(todos, list):
@@ -413,8 +421,17 @@ class TranscriptParser:
         if summary:
             if len(summary) > cls._MAX_SUMMARY_LENGTH:
                 summary = summary[: cls._MAX_SUMMARY_LENGTH] + "..."
-            return f"{display_name} {summary}"
-        return display_name
+            result = f"{display_name} {summary}"
+        else:
+            result = display_name
+
+        # BRAIN FORK (patch 48): dedup consecutive identical tool summaries.
+        # Claude Code often calls Read/Glob twice for same file (parallel tools).
+        last = cls._last_tool_summary.get("_global")
+        if result == last:
+            return ""
+        cls._last_tool_summary["_global"] = result
+        return result
 
     @staticmethod
     def extract_tool_result_text(content: list | Any) -> str:
@@ -532,15 +549,9 @@ class TranscriptParser:
                 return stats + "\n" + format_expandable_quote(text)
             return format_expandable_quote(text)
 
-        elif tool_name == "WebFetch":
-            char_count = len(text)
-            stats = f"  ⎿  {char_count} chars"
-            return stats + "\n" + format_expandable_quote(text)
-
-        elif tool_name == "WebSearch":
-            results = text.count("\n\n") + 1 if text else 0
-            stats = f"  ⎿  {results} results"
-            return stats + "\n" + format_expandable_quote(text)
+        elif tool_name in ("WebFetch", "WebSearch"):
+            # BRAIN FORK (patch 48): status messages, result not shown
+            return ""
 
         return format_expandable_quote(text)
 
