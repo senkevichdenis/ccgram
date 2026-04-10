@@ -155,6 +155,7 @@ from .handlers.interactive_ui import (
     set_interactive_mode,
 )
 from .handlers.message_queue import (
+    _status_msg_info,
     enqueue_content_message,
     enqueue_status_update,
     get_message_queue,
@@ -1938,14 +1939,14 @@ async def _send_shutdown_notification(application: Application) -> None:
 
 
 async def post_stop(application: Application) -> None:
-    """Send shutdown notification while HTTP transport is still alive."""
-    await _send_shutdown_notification(application)
+    """Graceful shutdown: stop workers, delete status messages, notify.
 
-
-async def post_shutdown(_application: Application) -> None:
+    Runs BEFORE Application.shutdown() closes HTTP transport,
+    so bot API calls (delete_message) still work here.
+    """
     global _status_poll_task
 
-    # Stop status polling
+    # 1. Stop status polling (prevents new status updates)
     if _status_poll_task:
         _status_poll_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1953,14 +1954,38 @@ async def post_shutdown(_application: Application) -> None:
         _status_poll_task = None
         logger.info("Status polling stopped")
 
-    # Stop all queue workers
+    # 2. Stop queue workers (prevents new status messages being sent)
     await shutdown_workers()
+
+    # 3. Delete all pending "Thinking..." status messages from Telegram
+    if _status_msg_info:
+        logger.info("Deleting %d orphan status messages before shutdown", len(_status_msg_info))
+        for skey, info in list(_status_msg_info.items()):
+            msg_id, _window_id, _text = info
+            user_id, thread_id_or_0 = skey
+            thread_id = thread_id_or_0 if thread_id_or_0 != 0 else None
+            chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+            try:
+                await application.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass  # Message already deleted or inaccessible — fine
+        _status_msg_info.clear()
+        logger.info("Orphan status messages cleaned up")
+
+    # 4. Shutdown notification (currently disabled, see BRAIN FORK patch 48)
+    await _send_shutdown_notification(application)
+
+
+async def post_shutdown(_application: Application) -> None:
+    # Workers and status polling already stopped in post_stop.
+    # post_shutdown runs AFTER Application.shutdown() closes HTTP,
+    # so no API calls here — only local cleanup.
 
     if session_monitor:
         session_monitor.stop()
         logger.info("Session monitor stopped")
 
-    # Flush debounced state to disk AFTER workers/monitor stop (captures final mutations)
+    # Flush debounced state to disk AFTER everything stops (captures final mutations)
     session_manager.flush_state()
 
 
