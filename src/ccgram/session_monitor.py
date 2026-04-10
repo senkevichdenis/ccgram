@@ -159,6 +159,13 @@ class SessionMonitor:
         """Get monotonic timestamp of last transcript activity for a session."""
         return self._last_activity.get(session_id)
 
+    def clear_activity(self, session_id: str) -> None:
+        """Clear activity tracking for a session (BRAIN FORK patch 48).
+
+        Called by Stop hook to immediately stop typing indicator.
+        """
+        self._last_activity.pop(session_id, None)
+
     def set_message_callback(
         self, callback: Callable[[NewMessage], Awaitable[None]]
     ) -> None:

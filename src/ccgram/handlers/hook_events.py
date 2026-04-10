@@ -206,6 +206,15 @@ async def _handle_stop(event: HookEvent, bot: Bot) -> None:
     if not users:
         return
 
+
+    # BRAIN FORK (patch 48): clear transcript activity to stop typing immediately
+    from .status_polling import get_active_monitor
+    mon = get_active_monitor()
+    if mon and users:
+        _wid = users[0][2]
+        _sid = session_manager.get_session_id_for_window(_wid)
+        if _sid:
+            mon.clear_activity(_sid)
     stop_reason = event.data.get("stop_reason", "")
     logger.debug(
         "Hook stop: window_key=%s, stop_reason=%s",

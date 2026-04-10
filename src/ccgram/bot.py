@@ -1914,6 +1914,13 @@ async def post_init(application: Application) -> None:
     session_monitor = monitor
     logger.info("Session monitor started")
 
+    # BRAIN FORK (patch 48): mark existing windows as "seen" to skip startup
+    # grace period. Without this, CCGram restart causes 30s of typing indicator
+    # on all bound windows even when no user interaction is happening.
+    from .handlers.status_polling import _get_window_state as _gws
+    for _uid, _tid, _wid in session_manager.iter_thread_bindings():
+        _gws(_wid).has_seen_status = True
+
     # Start status polling task (routed through PTB error handler)
     _status_poll_task = asyncio.create_task(status_poll_loop(application.bot))
     _status_poll_task.add_done_callback(task_done_callback)
@@ -1921,26 +1928,13 @@ async def post_init(application: Application) -> None:
 
 
 async def _send_shutdown_notification(application: Application) -> None:
-    """Send a shutdown notification to the General topic if a group is configured."""
-    from .main import _shutdown_signal
+    """Shutdown notification disabled (BRAIN FORK patch 48).
 
-    if not config.group_id:
-        return
-
-    sig = _shutdown_signal
-    reason = f"Received {signal.Signals(sig).name}" if sig else "Clean exit"
-
-    from . import __version__
-
-    text = f"🔌 ccgram stopped — {reason} (v{__version__})"
-    try:
-        await application.bot.send_message(
-            chat_id=config.group_id,
-            text=text,
-            message_thread_id=1,  # General topic
-        )
-    except (TelegramError, RuntimeError) as exc:
-        logger.debug("Shutdown notification skipped: %s", exc)
+    Reason: SIGTERM from systemctl restart is normal operation, not an error.
+    Crash notifications are handled by systemd OnFailure=notify-telegram@.service
+    which routes to Errors topic. No need for duplicate notification in General.
+    """
+    pass
 
 
 async def post_stop(application: Application) -> None:

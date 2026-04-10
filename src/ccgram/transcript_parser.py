@@ -76,8 +76,10 @@ class TranscriptParser:
     # BRAIN FORK: emoji removed for clean Telegram output
     TOOL_EMOJI: dict[str, str] = {}
 
-    # BRAIN FORK: tools to hide from Telegram -> show Thinking... instead
-    HIDDEN_TOOLS: set[str] = {"ToolSearch", "Grep", "Glob", "TodoWrite", "TodoRead"}
+    # BRAIN FORK (patch 48): tools that show Thinking... status in Telegram
+    THINKING_TOOLS: set[str] = {"ToolSearch", "Grep", "Glob"}
+    # BRAIN FORK (patch 48): tools completely hidden (instant, no visible pause)
+    SILENT_TOOLS: set[str] = {"TodoWrite", "TodoRead"}
 
     # BRAIN FORK: bash commands to hide -> show Thinking... instead
     _HIDDEN_BASH: set[str] = {
@@ -297,9 +299,12 @@ class TranscriptParser:
         Returns:
             Formatted string like "Read file.py", or empty string for hidden tools.
         """
-        # BRAIN FORK: hide internal tools (ToolSearch etc.)
-        if name in cls.HIDDEN_TOOLS:
+        # BRAIN FORK (patch 48): silent tools -> invisible
+        if name in cls.SILENT_TOOLS:
             return ""
+        # BRAIN FORK (patch 48): thinking tools -> show Thinking... status
+        if name in cls.THINKING_TOOLS:
+            return "__STATUS__Thinking..."
 
         from .utils import shorten_path
 

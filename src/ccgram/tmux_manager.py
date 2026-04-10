@@ -1031,11 +1031,32 @@ class TmuxManager:
         def _create_and_start() -> tuple[bool, str, str, str]:
             session = self.get_or_create_session()
             try:
-                # Create new window
-                window = session.new_window(
-                    window_name=final_window_name,
-                    start_directory=str(path),
-                )
+                # BRAIN FORK (patch 48): reuse __main__ placeholder window
+                # instead of creating a new one. __main__ is created by tmux
+                # as a mandatory first window. Reusing it avoids orphan windows.
+                window = None
+                for w in session.windows:
+                    if (w.window_name or "") == config.tmux_main_window_name:
+                        pane = w.active_pane
+                        pane_cmd = pane.pane_current_command if pane else ""
+                        # Only reuse if running bash (placeholder), not claude
+                        if pane_cmd in ("bash", "zsh", "sh", ""):
+                            w.rename_window(final_window_name)
+                            if pane:
+                                pane.send_keys(f"cd {path}", enter=True)
+                            window = w
+                            logger.info(
+                                "Reused __main__ window as '%s' (id=%s)",
+                                final_window_name, w.window_id or "",
+                            )
+                            break
+
+                if window is None:
+                    # No reusable __main__, create new window
+                    window = session.new_window(
+                        window_name=final_window_name,
+                        start_directory=str(path),
+                    )
 
                 new_window_id = window.window_id or ""
 

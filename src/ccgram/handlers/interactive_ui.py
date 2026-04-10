@@ -345,6 +345,15 @@ async def handle_interactive_ui(
 
     ui_name, text = captured
 
+    # BRAIN FORK (patch 48): filter trust/security dialogs at startup
+    # These appear before Claude Code is ready and should be auto-accepted,
+    # not sent to Telegram as interactive UI.
+    _TRUST_MARKERS = ("trust the files", "trust settings", "do you trust", "Trust this project")
+    if any(marker.lower() in text.lower() for marker in _TRUST_MARKERS):
+        logger.info("Auto-accepting trust dialog (window=%s): %s", window_id, text[:80])
+        await tmux_manager.send_keys(window_id, "Enter", raw=True)
+        return True
+
     # BRAIN FORK: for PermissionPrompt, enrich text with context from full pane
     # Keep only: description line + "Claude requested..." lines
     if ui_name == "PermissionPrompt":
