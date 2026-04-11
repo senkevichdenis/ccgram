@@ -153,8 +153,11 @@ async def rate_limit_send_message(
     Combines rate_limit_send() + _send_with_fallback() for convenience.
     Returns the sent Message on success, None on failure.
     """
-    # BRAIN FORK: DM chats (positive chat_id) don't support message_thread_id
-    if chat_id > 0:
+    # BRAIN FORK: DM chats (positive chat_id) don't support message_thread_id.
+    # General topic (thread_id=1) in forum groups: Telegram API rejects
+    # message_thread_id=1 with "message thread not found". Must omit entirely.
+    tid = kwargs.get("message_thread_id")
+    if chat_id > 0 or tid == 1:
         kwargs.pop("message_thread_id", None)
     await rate_limit_send(chat_id)
     return await _send_with_fallback(bot, chat_id, text, **kwargs)

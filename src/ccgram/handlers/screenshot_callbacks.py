@@ -177,13 +177,16 @@ async def _handle_pane_screenshot(
         return
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     try:
-        await query.get_bot().send_document(
+        send_kwargs: dict = dict(
             chat_id=chat_id,
             document=io.BytesIO(png_bytes),
             filename=f"pane_{pane_id}.png",
             reply_markup=keyboard,
-            message_thread_id=thread_id,
         )
+        # General topic (thread_id=1): Telegram API rejects message_thread_id=1
+        if thread_id is not None and thread_id != 1:
+            send_kwargs["message_thread_id"] = thread_id
+        await query.get_bot().send_document(**send_kwargs)
         await query.answer(f"\U0001f4f8 Pane {pane_id}")
     except TelegramError as e:
         logger.error("Failed to send pane screenshot: %s", e)
@@ -398,13 +401,16 @@ async def _handle_status_screenshot(
         return
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
     try:
-        await query.get_bot().send_document(
+        send_kwargs: dict = dict(
             chat_id=chat_id,
             document=io.BytesIO(png_bytes),
             filename="screenshot.png",
             reply_markup=keyboard,
-            message_thread_id=thread_id,
         )
+        # General topic (thread_id=1): Telegram API rejects message_thread_id=1
+        if thread_id is not None and thread_id != 1:
+            send_kwargs["message_thread_id"] = thread_id
+        await query.get_bot().send_document(**send_kwargs)
         await query.answer("\U0001f4f8")
     except TelegramError as e:
         logger.error("Failed to send screenshot: %s", e)

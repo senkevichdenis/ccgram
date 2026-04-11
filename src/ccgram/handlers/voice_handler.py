@@ -143,11 +143,15 @@ async def handle_voice_message(
     if audio_bytes is None:
         return
 
-    await message.get_bot().send_chat_action(
+    # General topic (thread_id=1): Telegram API rejects message_thread_id=1
+    typing_kwargs: dict = dict(
         chat_id=message.chat.id,
-        message_thread_id=message.message_thread_id,
         action=ChatAction.TYPING,
     )
+    _tid = message.message_thread_id
+    if _tid is not None and _tid != 1:
+        typing_kwargs["message_thread_id"] = _tid
+    await message.get_bot().send_chat_action(**typing_kwargs)
 
     result = await _transcribe_audio(message, transcriber, audio_bytes)
     if result is None:
