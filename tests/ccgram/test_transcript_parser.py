@@ -467,12 +467,11 @@ class TestParseEntries:
             ),
         ]
         result, pending = TranscriptParser.parse_entries(entries)
+        # BRAIN FORK (patch 54): tool_result emits 0 visible bytes.
+        # pending_tools is popped but no ParsedEntry is appended.
         tool_result_entries = [e for e in result if e.content_type == "tool_result"]
-        assert len(tool_result_entries) == 1
-        tr = tool_result_entries[0]
-        assert "+1" in tr.text
-        assert "\u22121" in tr.text
-        assert EXPQUOTE_START in tr.text
+        assert len(tool_result_entries) == 0
+        assert pending == {}
 
     def test_error_tool_result(
         self,
@@ -491,9 +490,11 @@ class TestParseEntries:
             ),
         ]
         result, pending = TranscriptParser.parse_entries(entries)
+        # BRAIN FORK (patch 54): errors from tool_result not shown in chat;
+        # Fred surfaces them in his text response instead.
         tool_result_entries = [e for e in result if e.content_type == "tool_result"]
-        assert len(tool_result_entries) == 1
-        assert "\u26a0\ufe0f Permission denied" in tool_result_entries[0].text
+        assert len(tool_result_entries) == 0
+        assert pending == {}
 
     def test_interrupted_tool_result(
         self,
@@ -512,9 +513,10 @@ class TestParseEntries:
             ),
         ]
         result, pending = TranscriptParser.parse_entries(entries)
+        # BRAIN FORK (patch 54): interrupted tool_result not shown in chat.
         tool_result_entries = [e for e in result if e.content_type == "tool_result"]
-        assert len(tool_result_entries) == 1
-        assert "Interrupted" in tool_result_entries[0].text
+        assert len(tool_result_entries) == 0
+        assert pending == {}
 
     def test_pending_tools_carry_over(self, make_jsonl_entry, make_tool_use_block):
         entries = [

@@ -736,7 +736,18 @@ class TranscriptParser:
                     btype = block.get("type", "")
 
                     if btype == "tool_result":
+                        # BRAIN FORK (patch 54): tool_result emits 0 visible
+                        # bytes. Information about what Fred did is carried by
+                        # tool_use entries. Errors and interruptions surface
+                        # via Fred's text response, not via CCGram rendering.
+                        # Fixes duplicate "Edit mcp-proxy / Edit mcp-proxy"
+                        # bug in batch renderer (message_queue.first_line).
                         tool_use_id = block.get("tool_use_id", "")
+                        pending_tools.pop(tool_use_id, None)
+                        continue
+
+                        # Original code kept below (unreachable) for reference
+                        # until full cleanup patch. Remove next revision.
                         result_content = block.get("content", "")
                         result_text = cls.extract_tool_result_text(result_content)
                         is_error = block.get("is_error", False)
