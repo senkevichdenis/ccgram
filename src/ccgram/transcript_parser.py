@@ -416,6 +416,14 @@ class TranscriptParser:
         else:
             result = display_name
 
+        # BRAIN FORK: file operations (Read/Write/Edit/NotebookEdit) shown as
+        # temp status, not as persistent chat line. User requested 2026-04-18:
+        # "Read/Edit/Write should be temp like Bash". Keeps chat clean —
+        # only final text responses and interactive UI persist.
+        _FILE_TOOLS = {"Read", "Write", "Edit", "NotebookEdit"}
+        if name in _FILE_TOOLS and not result.startswith("__STATUS__"):
+            result = f"__STATUS__{result}"
+
         # BRAIN FORK (patch 48): dedup consecutive identical tool summaries.
         # Claude Code often calls Read/Glob twice for same file (parallel tools).
         last = cls._last_tool_summary.get("_global")

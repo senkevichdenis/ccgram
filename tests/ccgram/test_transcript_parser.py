@@ -178,6 +178,68 @@ class TestFormatToolUseSummary:
 
 
 
+class TestFileToolsAsStatus:
+    """BRAIN FORK: Read/Edit/Write/NotebookEdit → temp status (not persistent)."""
+
+    def test_read_returns_status_prefix(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Read", {"file_path": "/home/agent/mcp-tools/mcp-proxy.js"}
+        )
+        assert result.startswith("__STATUS__"), \
+            f"expected __STATUS__ prefix, got {result!r}"
+        assert "Read" in result
+        assert "mcp-proxy" in result
+
+    def test_write_returns_status_prefix(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Write", {"file_path": "/tmp/new_file.py", "content": "print(1)"}
+        )
+        assert result.startswith("__STATUS__")
+        assert "Write" in result
+        assert "new_file" in result
+
+    def test_edit_returns_status_prefix(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Edit",
+            {
+                "file_path": "/home/agent/foo.py",
+                "old_string": "a",
+                "new_string": "b",
+            },
+        )
+        assert result.startswith("__STATUS__")
+        assert "Edit" in result
+        assert "foo" in result
+
+    def test_notebook_edit_returns_status_prefix(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "NotebookEdit",
+            {
+                "notebook_path": "/tmp/analysis.ipynb",
+                "new_source": "import pandas",
+            },
+        )
+        assert result.startswith("__STATUS__")
+
+    def test_read_from_ccgram_uploads_keeps_existing_status(self):
+        """Existing upload-media status (Viewing image / Reading document / etc)
+        should NOT be double-prefixed."""
+        result = TranscriptParser.format_tool_use_summary(
+            "Read", {"file_path": "/home/agent/.ccgram-uploads/image.jpg"}
+        )
+        # Single __STATUS__ prefix only
+        assert result.count("__STATUS__") == 1
+        assert "Viewing image" in result
+
+    def test_read_strips_file_extension(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Read", {"file_path": "/path/to/session.py"}
+        )
+        # `.py` stripped for clean display
+        assert ".py" not in result
+        assert "session" in result
+
+
 class TestBashAllThinking:
     """BRAIN FORK: ALL Bash commands must return __STATUS__Thinking..."""
 
