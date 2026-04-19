@@ -69,14 +69,17 @@ def on_event(key: StateKey, event: dict) -> None:
     if op == "list":
         return
 
-    state = _get_or_create(key)
-
     if op == "assign":
         tuid = str(event.get("tuid", "") or "").strip()
         real_id = str(event.get("id", "") or "").strip()
-        if not tuid or not real_id or tuid not in state.tasks:
-            return
-        if real_id == tuid:
+        state = _states.get(key)
+        if (
+            not state
+            or not tuid
+            or not real_id
+            or tuid not in state.tasks
+            or real_id == tuid
+        ):
             return
         # Rekey while preserving insertion order
         new_tasks: "OrderedDict[str, TaskInfo]" = OrderedDict()
@@ -92,6 +95,9 @@ def on_event(key: StateKey, event: dict) -> None:
         return
 
     if op == "create":
+        # Only now do we materialise state — avoids leaking empty entries
+        # from no-op events (update/delete on unknown ids).
+        state = _get_or_create(key)
         if lookup_key in state.tasks:
             return
         state.tasks[lookup_key] = TaskInfo(
@@ -100,6 +106,9 @@ def on_event(key: StateKey, event: dict) -> None:
             status=str(event.get("status", "pending") or "pending"),
         )
     elif op == "update":
+        state = _states.get(key)
+        if not state:
+            return
         new_status = event.get("status")
         # Fred's real Task system uses status="deleted" to remove a task
         # (not a dedicated TaskDelete op). Treat as delete.
@@ -116,6 +125,9 @@ def on_event(key: StateKey, event: dict) -> None:
         if new_status:
             info.status = str(new_status)
     elif op == "delete":
+        state = _states.get(key)
+        if not state:
+            return
         state.tasks.pop(lookup_key, None)
 
 

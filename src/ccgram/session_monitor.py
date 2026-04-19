@@ -551,10 +551,16 @@ class SessionMonitor:
             # BRAIN FORK: skip consecutive duplicate entries (patch 36)
             # parse_entries generates two entries per event (short + detailed).
             # Track last text prefix per session in module-level dict.
-            _text_prefix = entry.text[:25]
-            if _text_prefix == _session_prev_prefix.get(session_id):
-                continue
-            _session_prev_prefix[session_id] = _text_prefix
+            # __TASK_EVENT__ markers are exempt: every update shares the same
+            # 25-char prefix (`__TASK_EVENT__{"op": "upda`) but carries a
+            # unique payload per call — dedup would collapse 10 TaskUpdates
+            # into 2. Task events pass through without touching the tracker
+            # so the non-task dedup state survives across the burst.
+            if not entry.text.startswith("__TASK_EVENT__"):
+                _text_prefix = entry.text[:25]
+                if _text_prefix == _session_prev_prefix.get(session_id):
+                    continue
+                _session_prev_prefix[session_id] = _text_prefix
             new_messages.append(
                 NewMessage(
                     session_id=session_id,

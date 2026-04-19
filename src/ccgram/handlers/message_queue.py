@@ -669,17 +669,12 @@ async def _handle_task_event(
     if op == "assign":
         return
 
-    # Show transitional label: edit the persistent list slot if we already
-    # have one, otherwise use the status slot (list will be promoted to
-    # persistent on first debounce fire).
-    transitional = _TASK_TRANSITIONAL[op]
-    if list_key in _task_list_msg_info:
-        await _edit_task_list_message(
-            bot, user_id, thread_id_or_0, window_id, transitional
-        )
-    else:
+    # Transitional label only during the first-ever burst (before the list
+    # exists). Subsequent bursts do not flash anything — the list stays
+    # visible and gets silently edited once the debounce fires.
+    if list_key not in _task_list_msg_info:
         await _do_send_status_message(
-            bot, user_id, thread_id_or_0, window_id, transitional
+            bot, user_id, thread_id_or_0, window_id, _TASK_TRANSITIONAL[op]
         )
 
     async def _render() -> None:
