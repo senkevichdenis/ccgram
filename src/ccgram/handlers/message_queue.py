@@ -974,6 +974,19 @@ async def _process_status_update_task(
             # Same content, skip edit
             pass
         else:
+            # BRAIN FORK: guard against polling clobber. The 1s poller
+            # arrives here with "Thinking..." and would overwrite a
+            # freshly-set tool-specific status ("Read X", "Bash X") the
+            # moment it appears. Respect the sticky window so the user
+            # actually sees what the tool is doing for a couple seconds.
+            incoming_is_default = status_text in _POLLING_DEFAULT_STATUSES
+            current_is_default = last_text in _POLLING_DEFAULT_STATUSES
+            if (
+                incoming_is_default
+                and not current_is_default
+                and time.monotonic() < _status_sticky_until.get(skey, 0.0)
+            ):
+                return
             # Same window, text changed - edit in place
             history = _get_idle_history(user_id, thread_id, status_text)
             keyboard = build_status_keyboard(window_id, history=history)
@@ -986,6 +999,10 @@ async def _process_status_update_task(
             )
             if success:
                 _status_msg_info[skey] = (msg_id, window_id, status_text)
+                if not incoming_is_default:
+                    _status_sticky_until[skey] = (
+                        time.monotonic() + _STATUS_STICKY_SECONDS
+                    )
             else:
                 # Edit failed (message deleted, rate limit, etc.)
                 # Clear tracking and let the next poll cycle recreate it

@@ -23,11 +23,6 @@ import structlog
 logger = structlog.get_logger()
 
 DEBOUNCE_SECONDS: float = 0.5
-# Ceiling so an unusually tight burst (events < DEBOUNCE apart) cannot
-# starve the first render indefinitely. After this many seconds since the
-# oldest pending event, the next schedule_render call forces an immediate
-# fire instead of resetting the timer.
-MAX_DEBOUNCE_WAIT_SECONDS: float = 2.5
 
 StateKey = tuple[int, int, str]  # (user_id, thread_id_or_0, window_id)
 
@@ -48,7 +43,6 @@ class TaskState:
     tasks: "OrderedDict[str, TaskInfo]" = field(default_factory=OrderedDict)
     timer: Optional[asyncio.Task] = None
     list_rendered: bool = False
-    burst_started_at: Optional[float] = None
 
 
 _states: dict[StateKey, TaskState] = {}
@@ -188,39 +182,20 @@ def schedule_render(
     key: StateKey,
     callback: Callable[[], Awaitable[None]],
 ) -> None:
-    """Start/reset the debounce timer.
-
-    Cancels the previous timer if still pending. If the oldest pending
-    event is older than MAX_DEBOUNCE_WAIT_SECONDS, shorten the remaining
-    sleep to 0 so a continuous high-frequency burst cannot starve the
-    first render.
-    """
+    """Start/reset debounce timer. Cancels the previous one if still pending."""
     state = _get_or_create(key)
     old = state.timer
-    old_pending = old is not None and not old.done()
-    if old_pending:
+    if old is not None and not old.done():
         old.cancel()
-
-    now = asyncio.get_event_loop().time()
-    if not old_pending or state.burst_started_at is None:
-        state.burst_started_at = now
-
-    elapsed = now - state.burst_started_at
-    remaining = max(0.0, min(DEBOUNCE_SECONDS, MAX_DEBOUNCE_WAIT_SECONDS - elapsed))
 
     async def _fire() -> None:
         try:
-            if remaining > 0:
-                await asyncio.sleep(remaining)
+            await asyncio.sleep(DEBOUNCE_SECONDS)
             await callback()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("task_state render callback failed: %s", exc)
-        finally:
-            s = _states.get(key)
-            if s is not None and s.timer is not None and s.timer.done():
-                s.burst_started_at = None
 
     state.timer = asyncio.create_task(_fire())
 
