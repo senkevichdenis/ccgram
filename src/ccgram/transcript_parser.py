@@ -97,23 +97,43 @@ class TranscriptParser:
     # BRAIN FORK: bash commands starting with these git subcommands -> hide
     _HIDDEN_GIT: set[str] = {"add", "stash", "fetch", "branch", "checkout", "rebase", "merge", "reset", "tag", "log", "status", "diff", "show", "remote", "config"}
 
+    # BRAIN FORK: generic basenames — when stripped to these, prepend the
+    # parent directory so `Read post-writer/SKILL` distinguishes from
+    # `Read research/SKILL`. Otherwise all five skill reads look identical
+    # in Telegram and get deduped to a single status message.
+    _GENERIC_BASENAMES = frozenset(
+        {"SKILL", "README", "index", "main", "__init__", "package",
+         "config", "settings", "schema", "types"}
+    )
+
     # BRAIN FORK: file extension removal for clean display
     @staticmethod
     def _strip_extension(path: str) -> str:
         """Remove file extension and take basename for clean Telegram display.
-        
+
         BRAIN FORK (patch 48): always basename. User wants short names:
         'session' not 'ccgram/src/ccgram/session'.
+
+        BRAIN FORK (patch 55+): if the basename is a generic name reused
+        across many directories (SKILL.md, README.md, index.*), prepend
+        the parent directory for clarity.
         """
         import os
+        original = path
         # Take only the filename, not the full path
-        path = os.path.basename(path)
-        name, ext = os.path.splitext(path)
-        if ext in (".md", ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yaml", ".yml",
-                    ".html", ".css", ".scss", ".sql", ".sh", ".env", ".txt", ".csv",
-                    ".xml", ".toml", ".cfg", ".ini", ".conf", ".log"):
-            return name
-        return path
+        basename = os.path.basename(path)
+        name, ext = os.path.splitext(basename)
+        known_exts = (".md", ".py", ".ts", ".tsx", ".js", ".jsx", ".json",
+                      ".yaml", ".yml", ".html", ".css", ".scss", ".sql",
+                      ".sh", ".env", ".txt", ".csv", ".xml", ".toml",
+                      ".cfg", ".ini", ".conf", ".log")
+        stripped = name if ext in known_exts else basename
+
+        if stripped in TranscriptParser._GENERIC_BASENAMES:
+            parent = os.path.basename(os.path.dirname(original))
+            if parent:
+                return f"{parent}/{stripped}"
+        return stripped
 
     @staticmethod
     def parse_line(line: str) -> dict | None:

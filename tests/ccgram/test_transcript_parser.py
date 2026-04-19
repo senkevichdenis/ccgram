@@ -418,6 +418,33 @@ class TestFileToolsAsStatus:
         assert ".py" not in result
         assert "session" in result
 
+    def test_read_generic_basename_includes_parent_dir(self):
+        """SKILL.md in different skill dirs must render distinguishably."""
+        result_pw = TranscriptParser.format_tool_use_summary(
+            "Read",
+            {"file_path": "/home/agent/.claude/skills/post-writer/SKILL.md"},
+        )
+        result_rs = TranscriptParser.format_tool_use_summary(
+            "Read",
+            {"file_path": "/home/agent/.claude/skills/research/SKILL.md"},
+        )
+        assert "post-writer/SKILL" in result_pw
+        assert "research/SKILL" in result_rs
+        assert result_pw != result_rs
+
+    def test_read_generic_basename_readme(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Read", {"file_path": "/home/agent/projects/foo/README.md"}
+        )
+        assert "foo/README" in result
+
+    def test_read_non_generic_basename_stays_short(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Read", {"file_path": "/home/agent/src/utils.py"}
+        )
+        assert "utils" in result
+        assert "src/utils" not in result  # non-generic keeps bare basename
+
 
 class TestBashAllThinking:
     """BRAIN FORK: ALL Bash commands must return __STATUS__Thinking..."""

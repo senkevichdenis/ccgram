@@ -19,6 +19,7 @@ Key components:
 import asyncio
 import json
 import structlog
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -186,6 +187,14 @@ _status_msg_info: dict[tuple[int, int], tuple[int, str, str]] = {}
 # list survives Read/Bash/Edit statuses running during task execution.
 # (user_id, thread_id_or_0) -> (message_id, window_id, last_text)
 _task_list_msg_info: dict[tuple[int, int], tuple[int, str, str]] = {}
+
+# BRAIN FORK: sticky timestamp for tool statuses so the 1s status poller
+# cannot instantly overwrite a just-set "Read foo" / "Bash foo" with the
+# generic "Thinking..." from the polling path. Tool-emitted statuses set
+# the deadline; polling default status respects it and skips within window.
+_STATUS_STICKY_SECONDS = 2.0
+_status_sticky_until: dict[tuple[int, int], float] = {}
+_POLLING_DEFAULT_STATUSES = frozenset({"Thinking...", "Idle", "Ready"})
 
 # Active tool batches: (user_id, thread_id_or_0) -> ToolBatch
 _active_batches: dict[tuple[int, int], ToolBatch] = {}
@@ -1005,8 +1014,25 @@ async def _do_send_status_message(
     history = _get_idle_history(user_id, thread_id_or_0, text)
     keyboard = build_status_keyboard(window_id, history=history)
 
-    # Guard: if a status message already exists, edit it instead of sending new
+    # BRAIN FORK: guard against polling clobber. The 1s status poller emits
+    # "Thinking..." every tick based on tmux spinner state. Without this,
+    # a tool-specific status like "Read post-writer/SKILL" survives only
+    # until the next poll and is immediately overwritten by the generic
+    # default. Keep the specific status sticky for 2s after it is set.
     existing = _status_msg_info.get(skey)
+    is_polling_default = text in _POLLING_DEFAULT_STATUSES
+    now = time.monotonic()
+    if is_polling_default and existing:
+        _, _, last_text = existing
+        if (
+            last_text not in _POLLING_DEFAULT_STATUSES
+            and now < _status_sticky_until.get(skey, 0.0)
+        ):
+            return
+    if not is_polling_default:
+        _status_sticky_until[skey] = now + _STATUS_STICKY_SECONDS
+
+    # Guard: if a status message already exists, edit it instead of sending new
     if existing:
         msg_id, stored_wid, last_text = existing
         if stored_wid == window_id and text == last_text:
@@ -1063,6 +1089,7 @@ async def _do_clear_status_message(
         finally:
             if _status_msg_info.get(skey) is info:
                 _status_msg_info.pop(skey, None)
+            _status_sticky_until.pop(skey, None)
 
 
 async def enqueue_content_message(
@@ -1117,6 +1144,7 @@ def clear_status_msg_info(user_id: int, thread_id: int | None = None) -> None:
     """Clear status message tracking for a user (and optionally a specific thread)."""
     skey = (user_id, thread_id or 0)
     _status_msg_info.pop(skey, None)
+    _status_sticky_until.pop(skey, None)
 
 
 def clear_batch_for_topic(user_id: int, thread_id: int | None = None) -> None:
