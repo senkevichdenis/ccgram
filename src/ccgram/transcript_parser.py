@@ -485,11 +485,10 @@ class TranscriptParser:
         if name == "AskUserQuestion":
             display_name = "Ask User Question"
 
-        # For Bash: special labels for docker
-        if name == "Bash" and summary:
-            first_word = summary.split()[0] if summary.split() else ""
-            if first_word == "docker":
-                return "работаю с Docker"
+        # BRAIN FORK 2026-04-19: removed special "работаю с Docker" label for
+        # Bash docker commands — all Bash commands are uniformly Thinking...
+        # (or their description). Old branch preserved here as a no-op comment
+        # so future readers see the deliberate decision.
 
         if summary:
             if len(summary) > cls._MAX_SUMMARY_LENGTH:
