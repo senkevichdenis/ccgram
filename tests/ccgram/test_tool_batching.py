@@ -306,6 +306,11 @@ def _make_tool_result(
     )
 
 
+@pytest.mark.skip(
+    reason="BRAIN FORK: tool batch accumulation removed — non-status tool_use "
+    "now collapses to __STATUS__Thinking... via _do_send_status_message. "
+    "See TestProcessBatchTaskBrainFork below for new behavior."
+)
 class TestProcessBatchTask:
     @patch("ccgram.handlers.message_queue.session_manager")
     @patch("ccgram.handlers.message_queue.rate_limit_send_message")
@@ -767,6 +772,7 @@ class TestFlushBatch:
 # --- Batch isolation tests ---
 
 
+@pytest.mark.skip(reason="BRAIN FORK: batch accumulation removed — tool_use → Thinking")
 class TestBatchIsolation:
     @patch("ccgram.handlers.message_queue.session_manager")
     @patch("ccgram.handlers.message_queue.rate_limit_send_message")
@@ -841,6 +847,7 @@ class TestQueueWorkerRetryAfter:
 # --- C1 fix: tool_result not silently dropped ---
 
 
+@pytest.mark.skip(reason="BRAIN FORK: batch accumulation removed — tool_use → Thinking")
 class TestToolResultNotDropped:
     @patch("ccgram.handlers.message_queue.session_manager")
     @patch("ccgram.handlers.message_queue.rate_limit_send_message")
@@ -999,6 +1006,7 @@ class TestDefensiveElseBranch:
 # --- Different users same thread isolation ---
 
 
+@pytest.mark.skip(reason="BRAIN FORK: batch accumulation removed — tool_use → Thinking")
 class TestDifferentUsersIsolation:
     @patch("ccgram.handlers.message_queue.session_manager")
     @patch("ccgram.handlers.message_queue.rate_limit_send_message")
@@ -1026,3 +1034,35 @@ class TestDifferentUsersIsolation:
         assert (2, 10) in _active_batches
         assert _active_batches[(1, 10)].entries[0].tool_use_id == "tu1"
         assert _active_batches[(2, 10)].entries[0].tool_use_id == "tu2"
+
+
+class TestProcessBatchTaskBrainFork:
+    """BRAIN FORK: non-status non-task tool_use collapses to __STATUS__Thinking...
+    Batch accumulation is dead — Fred's Ask/ExitPlan/Skill/Task/MCP/generic
+    tool calls no longer produce a persistent batch listing in chat; the
+    interactive pieces (AskUserQuestion buttons, plan text, subagent hooks)
+    still surface via their own paths.
+    """
+
+    @patch("ccgram.handlers.message_queue.session_manager")
+    @patch(
+        "ccgram.handlers.message_queue._do_send_status_message",
+        new_callable=AsyncMock,
+    )
+    @patch("ccgram.handlers.message_queue._should_batch", return_value=True)
+    async def test_non_status_tool_use_emits_thinking(
+        self, mock_should, mock_send_status, mock_sm
+    ) -> None:
+        mock_sm.resolve_chat_id.return_value = 42
+        bot = AsyncMock()
+        await _process_batch_task(
+            bot, 1, _make_tool_use(text="Ask User Question foo?")
+        )
+
+        mock_send_status.assert_awaited_once()
+        _bot, _uid, _thr, _wid, label = mock_send_status.await_args.args
+        assert label == "Thinking..."
+
+        # Crucially, no batch entry was appended (batch accumulation dead).
+        bkey = (1, 10)
+        assert bkey not in _active_batches or not _active_batches[bkey].entries

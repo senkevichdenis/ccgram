@@ -424,25 +424,16 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
             )
             return
 
-        entry = ToolBatchEntry(
-            tool_use_id=task.tool_use_id,
-            tool_use_text=entry_text,
+        # BRAIN FORK: any tool_use that reaches here (AskUserQuestion,
+        # ExitPlanMode, Skill, Task subagent, non-status MCP tools, generic)
+        # collapses to Thinking... — no persistent batch message in chat.
+        # The interactive parts still surface via their own paths:
+        # AskUserQuestion/ExitPlanMode via interactive_ui prompts, subagent
+        # progress via hook_events TeammateIdle/TaskCompleted.
+        await _do_send_status_message(
+            bot, user_id, thread_id, window_id, "Thinking..."
         )
-        batch.entries.append(entry)
-        batch.total_length += len(entry_text)
-
-        # Check if batch exceeds limits — flush and start new
-        if (
-            len(batch.entries) >= BATCH_MAX_ENTRIES
-            or batch.total_length > BATCH_MAX_LENGTH
-        ):
-            overflow_entry = batch.entries.pop()
-            batch.total_length -= len(entry_text)
-            await _flush_batch(bot, user_id, thread_id)
-            batch = ToolBatch(window_id=window_id, thread_id=thread_id)
-            batch.entries.append(overflow_entry)
-            batch.total_length = len(entry_text)
-            _active_batches[bkey] = batch
+        return
     else:
         # Defensive: route unexpected content_type to normal processing
         await _process_content_task(bot, user_id, task)
