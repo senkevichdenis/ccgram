@@ -333,6 +333,29 @@ class TestTaskStarEvents:
         assert "id" not in payload
         assert payload["subject"] == "No id"
 
+    def test_task_create_includes_tuid_from_tool_use_id(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskCreate",
+            {"_tool_use_id": "toolu_abc123", "subject": "Real usage"},
+        )
+        payload = self._parse_marker(result)
+        assert payload["tuid"] == "toolu_abc123"
+        assert "id" not in payload  # TaskCreate input has no id
+
+    def test_task_update_includes_tuid_alongside_id(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskUpdate",
+            {
+                "_tool_use_id": "toolu_upd",
+                "taskId": "5",
+                "status": "completed",
+            },
+        )
+        payload = self._parse_marker(result)
+        assert payload["id"] == "5"
+        assert payload["tuid"] == "toolu_upd"
+        assert payload["status"] == "completed"
+
 
 class TestFileToolsAsStatus:
     """BRAIN FORK: Read/Edit/Write/NotebookEdit → temp status (not persistent)."""

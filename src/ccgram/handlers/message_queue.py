@@ -394,6 +394,14 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
 
         entry_text = task.text or "\n".join(task.parts) or "tool call"
 
+        # BRAIN FORK: Task* events (TaskCreate/TaskUpdate/TaskDelete/TaskList)
+        # emit __TASK_EVENT__ markers that must be handled specially — without
+        # this branch the raw JSON marker leaks into the chat as a batch tool
+        # line because batch path bypasses _process_content_task.
+        if entry_text.startswith(_TASK_MARKER):
+            await _handle_task_event(bot, user_id, task, entry_text)
+            return
+
         # BRAIN FORK: status tools (listening..., watching...) show as temp status message
         if entry_text.startswith("__STATUS__"):
             status_label = entry_text[len("__STATUS__"):]
@@ -640,7 +648,7 @@ async def _handle_task_event(
         return
 
     op = payload.get("op")
-    if op not in _TASK_TRANSITIONAL:
+    if op not in _TASK_TRANSITIONAL and op != "assign":
         return
 
     window_id = task.window_id or ""
@@ -648,6 +656,12 @@ async def _handle_task_event(
     key: task_state.StateKey = (user_id, thread_id_or_0, window_id)
 
     task_state.on_event(key, payload)
+
+    # op=assign is silent re-keying after TaskCreate tool_result: state
+    # changes (tuid → real id) but no transitional status and no render,
+    # so the currently-shown status stays stable during the burst.
+    if op == "assign":
+        return
 
     transitional = _TASK_TRANSITIONAL[op]
     await _do_send_status_message(bot, user_id, thread_id_or_0, window_id, transitional)

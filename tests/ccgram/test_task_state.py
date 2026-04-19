@@ -297,6 +297,59 @@ class TestClear:
         assert task_state.has_tasks(KEY_OTHER_THREAD) is True
 
 
+# ── tuid placeholder + assign rekey ──────────────────────────────────────
+
+
+class TestTuidAndAssign:
+    """Tasks created with tuid placeholder get re-keyed on op=assign."""
+
+    def test_create_uses_tuid_when_id_missing(self):
+        task_state.on_event(
+            KEY,
+            {"op": "create", "tuid": "toolu_abc", "subject": "X"},
+        )
+        assert task_state.snapshot(KEY) == [("toolu_abc", "X", "", "pending")]
+
+    def test_assign_rekeys_tuid_to_real_id(self):
+        task_state.on_event(
+            KEY, {"op": "create", "tuid": "toolu_abc", "subject": "X"}
+        )
+        task_state.on_event(
+            KEY, {"op": "assign", "tuid": "toolu_abc", "id": "5"}
+        )
+        assert task_state.snapshot(KEY) == [("5", "X", "", "pending")]
+
+    def test_assign_preserves_insertion_order(self):
+        task_state.on_event(KEY, {"op": "create", "tuid": "tuid_a", "subject": "A"})
+        task_state.on_event(KEY, {"op": "create", "tuid": "tuid_b", "subject": "B"})
+        task_state.on_event(KEY, {"op": "create", "tuid": "tuid_c", "subject": "C"})
+        task_state.on_event(KEY, {"op": "assign", "tuid": "tuid_b", "id": "2"})
+        ids = [row[0] for row in task_state.snapshot(KEY)]
+        assert ids == ["tuid_a", "2", "tuid_c"]
+
+    def test_update_finds_task_after_assign(self):
+        task_state.on_event(KEY, {"op": "create", "tuid": "toolu_xyz", "subject": "X"})
+        task_state.on_event(KEY, {"op": "assign", "tuid": "toolu_xyz", "id": "7"})
+        task_state.on_event(KEY, {"op": "update", "id": "7", "status": "completed"})
+        assert task_state.snapshot(KEY)[0][3] == "completed"
+
+    def test_assign_with_unknown_tuid_is_noop(self):
+        task_state.on_event(KEY, {"op": "create", "tuid": "tuid_a", "subject": "A"})
+        task_state.on_event(KEY, {"op": "assign", "tuid": "tuid_unknown", "id": "99"})
+        assert task_state.snapshot(KEY) == [("tuid_a", "A", "", "pending")]
+
+    def test_assign_with_same_id_is_noop(self):
+        task_state.on_event(KEY, {"op": "create", "id": "5", "subject": "A"})
+        task_state.on_event(KEY, {"op": "assign", "tuid": "5", "id": "5"})
+        assert task_state.snapshot(KEY) == [("5", "A", "", "pending")]
+
+    def test_update_with_status_deleted_removes_task(self):
+        task_state.on_event(KEY, {"op": "create", "id": "1", "subject": "A"})
+        task_state.on_event(KEY, {"op": "create", "id": "2", "subject": "B"})
+        task_state.on_event(KEY, {"op": "update", "id": "1", "status": "deleted"})
+        assert [row[0] for row in task_state.snapshot(KEY)] == ["2"]
+
+
 # ── debounce / timer (async) ─────────────────────────────────────────────
 
 

@@ -57,37 +57,66 @@ def _get_or_create(key: StateKey) -> TaskState:
 
 
 def on_event(key: StateKey, event: dict) -> None:
-    """Apply a create/update/delete event to state. 'list' is a no-op."""
+    """Apply a create/update/delete/assign event to state. 'list' is a no-op.
+
+    Task* tools in Claude Code 2.1.84+ do not include the task id in the
+    tool_use input — it is assigned by the runtime and returned in the
+    tool_result. The parser stores new TaskCreate tasks keyed by the
+    tool_use id (`tuid`) and later emits op=assign to re-key the task to
+    its real id. TaskUpdate/TaskDelete arrive with the real id in `taskId`.
+    """
     op = event.get("op")
     if op == "list":
         return
 
-    task_id = str(event.get("id", "") or "").strip()
-    if not task_id:
-        return
-
     state = _get_or_create(key)
 
-    if op == "create":
-        if task_id in state.tasks:
+    if op == "assign":
+        tuid = str(event.get("tuid", "") or "").strip()
+        real_id = str(event.get("id", "") or "").strip()
+        if not tuid or not real_id or tuid not in state.tasks:
             return
-        state.tasks[task_id] = TaskInfo(
+        if real_id == tuid:
+            return
+        # Rekey while preserving insertion order
+        new_tasks: "OrderedDict[str, TaskInfo]" = OrderedDict()
+        for tid, info in state.tasks.items():
+            new_tasks[real_id if tid == tuid else tid] = info
+        state.tasks = new_tasks
+        return
+
+    tuid = str(event.get("tuid", "") or "").strip()
+    task_id = str(event.get("id", "") or "").strip()
+    lookup_key = task_id or tuid
+    if not lookup_key:
+        return
+
+    if op == "create":
+        if lookup_key in state.tasks:
+            return
+        state.tasks[lookup_key] = TaskInfo(
             subject=str(event.get("subject", "") or "").strip(),
             active_form=str(event.get("activeForm", "") or "").strip(),
             status=str(event.get("status", "pending") or "pending"),
         )
     elif op == "update":
-        info = state.tasks.get(task_id)
+        new_status = event.get("status")
+        # Fred's real Task system uses status="deleted" to remove a task
+        # (not a dedicated TaskDelete op). Treat as delete.
+        if new_status == "deleted":
+            state.tasks.pop(lookup_key, None)
+            return
+        info = state.tasks.get(lookup_key)
         if info is None:
             return
         if "subject" in event and event["subject"] is not None:
             info.subject = str(event["subject"]).strip()
         if "activeForm" in event and event["activeForm"] is not None:
             info.active_form = str(event["activeForm"]).strip()
-        if "status" in event and event["status"]:
-            info.status = str(event["status"])
+        if new_status:
+            info.status = str(new_status)
     elif op == "delete":
-        state.tasks.pop(task_id, None)
+        state.tasks.pop(lookup_key, None)
 
 
 def render_list(key: StateKey) -> str:

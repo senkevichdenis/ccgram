@@ -178,6 +178,9 @@ class TranscriptParser:
         return "\n".join(texts)
 
     _RE_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+    # BRAIN FORK: extract task id from TaskCreate tool_result
+    # "Task #5 created successfully: ..." → capture the numeric id
+    _RE_TASK_CREATE_ID = re.compile(r"Task #(\d+) created")
 
     _RE_COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>")
     _RE_LOCAL_STDOUT = re.compile(
@@ -401,10 +404,12 @@ class TranscriptParser:
         elif name == "TodoRead":
             return "__STATUS__Checking tasks..."
         elif name in ("TaskCreate", "TaskUpdate", "TaskDelete", "TaskList"):
-            # BRAIN FORK: Claude Code 2.1.84+ Task* tools (one task per call).
-            # Emit a structured __TASK_EVENT__ marker; message_queue accumulates
-            # state per-thread and renders the full checklist after a 500ms
-            # debounce. Keeps the chat from flickering with 21 separate lines.
+            # BRAIN FORK: Claude Code 2.1.84+ Task* tools fire one task per call.
+            # TaskCreate has NO id in its input — the id is assigned by Claude
+            # Code and returned in the tool_result. Parser injects the
+            # tool_use_id as a placeholder (_tool_use_id) so the handler can
+            # track the task in state; when the tool_result arrives the parser
+            # emits op=assign mapping tool_use_id → real task id.
             op_map = {
                 "TaskCreate": "create",
                 "TaskUpdate": "update",
@@ -413,11 +418,22 @@ class TranscriptParser:
             }
             payload: dict[str, Any] = {"op": op_map[name]}
             if name != "TaskList":
-                tid = input_data.get("taskId") or input_data.get("id") or input_data.get("task_id")
+                tid = (
+                    input_data.get("taskId")
+                    or input_data.get("id")
+                    or input_data.get("task_id")
+                )
                 if tid is not None:
                     payload["id"] = str(tid)
-                for src, dst in (("subject", "subject"), ("activeForm", "activeForm"),
-                                 ("status", "status"), ("description", "description")):
+                tuid = input_data.get("_tool_use_id")
+                if tuid:
+                    payload["tuid"] = str(tuid)
+                for src, dst in (
+                    ("subject", "subject"),
+                    ("activeForm", "activeForm"),
+                    ("status", "status"),
+                    ("description", "description"),
+                ):
                     if src in input_data and input_data[src] is not None:
                         payload[dst] = input_data[src]
             return "__TASK_EVENT__" + json.dumps(payload, ensure_ascii=False)
@@ -696,6 +712,20 @@ class TranscriptParser:
                         tool_id = block.get("id", "")
                         name = block.get("name", "unknown")
                         inp = block.get("input", {})
+                        # BRAIN FORK: Task* tools carry no task id in the input
+                        # (it's assigned by Claude Code and returned in the
+                        # tool_result). Inject the tool_use id as a synthetic
+                        # placeholder key so the parser emits a trackable
+                        # marker; message_queue will re-key when the real id
+                        # arrives via the tool_result (op=assign).
+                        if name in (
+                            "TaskCreate",
+                            "TaskUpdate",
+                            "TaskDelete",
+                            "TaskList",
+                        ) and isinstance(inp, dict) and tool_id:
+                            inp = dict(inp)
+                            inp.setdefault("_tool_use_id", tool_id)
                         summary = cls.format_tool_use_summary(name, inp, cwd=cwd)
 
                         # ExitPlanMode: emit plan content as text before tool_use entry
@@ -785,7 +815,40 @@ class TranscriptParser:
                         # Fixes duplicate "Edit mcp-proxy / Edit mcp-proxy"
                         # bug in batch renderer (message_queue.first_line).
                         tool_use_id = block.get("tool_use_id", "")
-                        pending_tools.pop(tool_use_id, None)
+                        tool_info_for_assign = pending_tools.pop(tool_use_id, None)
+
+                        # BRAIN FORK: TaskCreate tool_result carries the
+                        # Claude-Code-assigned task id ("Task #5 created
+                        # successfully: ..."). Emit op=assign marker so
+                        # message_queue can re-key state tuid → real id
+                        # before TaskUpdate referencing that id arrives.
+                        if (
+                            tool_info_for_assign is not None
+                            and tool_info_for_assign.tool_name == "TaskCreate"
+                            and tool_use_id
+                        ):
+                            result_content = block.get("content", "")
+                            rtext = cls.extract_tool_result_text(result_content)
+                            m = cls._RE_TASK_CREATE_ID.search(rtext)
+                            if m:
+                                assign_payload = {
+                                    "op": "assign",
+                                    "tuid": tool_use_id,
+                                    "id": m.group(1),
+                                }
+                                result.append(
+                                    ParsedEntry(
+                                        role="assistant",
+                                        text="__TASK_EVENT__"
+                                        + json.dumps(
+                                            assign_payload, ensure_ascii=False
+                                        ),
+                                        content_type="tool_use",
+                                        tool_use_id=tool_use_id,
+                                        timestamp=entry_timestamp,
+                                        tool_name="TaskCreate",
+                                    )
+                                )
                         continue
 
                         # Original code kept below (unreachable) for reference
