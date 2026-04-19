@@ -445,6 +445,24 @@ class TestFileToolsAsStatus:
         assert "utils" in result
         assert "src/utils" not in result  # non-generic keeps bare basename
 
+    def test_websearch_renamed_to_searching(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "WebSearch", {"query": "foo"}
+        )
+        assert result == "__STATUS__Searching the web..."
+
+    def test_webfetch_renamed_to_fetching(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "WebFetch", {"url": "https://example.com"}
+        )
+        assert result == "__STATUS__Fetching page..."
+
+    def test_toolsearch_maps_to_thinking(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "ToolSearch", {"query": "select:Read"}
+        )
+        assert result == "__STATUS__Thinking..."
+
     def test_read_generic_basename_no_parent_falls_back(self):
         """Relative path and root-level path with no parent dir must not
         crash and must fall back to bare `SKILL` instead of emitting an

@@ -395,9 +395,12 @@ class TranscriptParser:
             summary = input_data.get("pattern", "")
         elif name == "Task":
             summary = input_data.get("description", "")
-        elif name in ("WebFetch", "WebSearch"):
-            # BRAIN FORK (patch 48): temporary status, disappears after completion
-            return "__STATUS__WebSearch"
+        elif name == "WebSearch":
+            # BRAIN FORK: present-continuous temp status, matches other
+            # ephemeral indicators (Thinking.../Listening.../Creating todo list...)
+            return "__STATUS__Searching the web..."
+        elif name == "WebFetch":
+            return "__STATUS__Fetching page..."
         elif name == "TodoWrite":
             # BRAIN FORK: render as temp status with checklist so user sees
             # what Fred planned + his progress. Icons: [ ] pending,

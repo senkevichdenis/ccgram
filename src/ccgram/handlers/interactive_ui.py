@@ -442,6 +442,7 @@ async def handle_interactive_ui(
                 await bot.send_message(
                     chat_id=chat_id,
                     text="Нет прав на изменение в этом проекте.",
+                    disable_notification=True,
                     **thread_kwargs,
                 )
             return True
@@ -491,10 +492,14 @@ async def handle_interactive_ui(
     sent: Message | None = None
     await rate_limit_send(chat_id)
     try:
+        # BRAIN FORK: interactive UI (plan mode, approvals, selection) is
+        # Fred asking for input — treated as intermediate, silent. Only
+        # real text replies from Fred should trigger push notifications.
         sent = await bot.send_message(
             chat_id=chat_id,
             text=text,
             reply_markup=keyboard,
+            disable_notification=True,
             **thread_kwargs,  # type: ignore[arg-type]
         )
     except BadRequest as e:

@@ -457,10 +457,13 @@ async def _process_batch_task(bot: Bot, user_id: int, task: MessageTask) -> None
     if batch.telegram_msg_id is None:
         # Clear status message first, then send new batch message
         await _do_clear_status_message(bot, user_id, thread_id)
+        # BRAIN FORK: tool batch is intermediate output (Read/Bash listings),
+        # not a real Fred reply → send silently to avoid push spam.
         sent = await rate_limit_send_message(
             bot,
             chat_id,
             batch_text,
+            disable_notification=True,
             **_send_kwargs(task.thread_id, chat_id=chat_id),  # type: ignore[arg-type]
         )
         if sent:
@@ -491,11 +494,13 @@ async def _flush_batch(bot: Bot, user_id: int, thread_id_or_0: int) -> None:
     batch_text = format_batch_message(batch.entries, subagent_label=subagent_label)
 
     if batch.telegram_msg_id is None:
-        # First send failed earlier — attempt one send before dropping
+        # First send failed earlier — attempt one send before dropping.
+        # Same rationale as above: intermediate tool batch → silent.
         await rate_limit_send_message(
             bot,
             chat_id,
             batch_text,
+            disable_notification=True,
             **_send_kwargs(thread_id, chat_id=chat_id),  # type: ignore[arg-type]
         )
         return
