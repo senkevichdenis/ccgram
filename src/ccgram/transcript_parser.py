@@ -400,6 +400,27 @@ class TranscriptParser:
             return "__STATUS__" + "\n".join(_lines)
         elif name == "TodoRead":
             return "__STATUS__Checking tasks..."
+        elif name in ("TaskCreate", "TaskUpdate", "TaskDelete", "TaskList"):
+            # BRAIN FORK: Claude Code 2.1.84+ Task* tools (one task per call).
+            # Emit a structured __TASK_EVENT__ marker; message_queue accumulates
+            # state per-thread and renders the full checklist after a 500ms
+            # debounce. Keeps the chat from flickering with 21 separate lines.
+            op_map = {
+                "TaskCreate": "create",
+                "TaskUpdate": "update",
+                "TaskDelete": "delete",
+                "TaskList": "list",
+            }
+            payload: dict[str, Any] = {"op": op_map[name]}
+            if name != "TaskList":
+                tid = input_data.get("taskId") or input_data.get("id") or input_data.get("task_id")
+                if tid is not None:
+                    payload["id"] = str(tid)
+                for src, dst in (("subject", "subject"), ("activeForm", "activeForm"),
+                                 ("status", "status"), ("description", "description")):
+                    if src in input_data and input_data[src] is not None:
+                        payload[dst] = input_data[src]
+            return "__TASK_EVENT__" + json.dumps(payload, ensure_ascii=False)
         elif name == "AskUserQuestion":
             questions = input_data.get("questions", [])
             if isinstance(questions, list) and questions:

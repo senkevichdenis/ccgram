@@ -17,6 +17,7 @@ Key components:
 """
 
 import asyncio
+import json
 import structlog
 from dataclasses import dataclass, field
 from typing import Literal
@@ -26,6 +27,7 @@ from telegram.error import RetryAfter, TelegramError
 
 import contextlib
 
+from .. import task_state
 from ..session import session_manager
 from ..utils import task_done_callback
 from .callback_data import (
@@ -603,11 +605,98 @@ def _send_kwargs(thread_id: int | None, chat_id: int = 0) -> dict[str, int]:
     return {}
 
 
+_TASK_MARKER = "__TASK_EVENT__"
+
+_TASK_TRANSITIONAL = {
+    "create": "Creating todo list...",
+    "update": "Updating todo list...",
+    "delete": "Updating todo list...",
+    "list": "Checking todo list...",
+}
+
+
+async def _handle_task_event(
+    bot: Bot,
+    user_id: int,
+    task: "MessageTask",
+    marker: str,
+) -> None:
+    """BRAIN FORK: decode __TASK_EVENT__ marker, update state, debounce-render.
+
+    Claude Code 2.1.84+ Task* tools fire one task per call. 21 tasks → 21
+    TaskCreate calls. We accumulate in task_state and render the full
+    checklist after 500ms of quiet instead of flickering per call.
+
+    While a burst is in progress, the status message shows a transitional
+    label (Creating/Updating/Checking todo list...). After debounce, the
+    same message is edited to show the rendered checklist. When all tasks
+    are completed, the checklist is promoted to a persistent message so
+    it remains visible in chat.
+    """
+    try:
+        payload = json.loads(marker[len(_TASK_MARKER):])
+    except json.JSONDecodeError as exc:
+        logger.warning("task event marker parse failed: %s", exc)
+        return
+
+    op = payload.get("op")
+    if op not in _TASK_TRANSITIONAL:
+        return
+
+    window_id = task.window_id or ""
+    thread_id_or_0 = task.thread_id or 0
+    key: task_state.StateKey = (user_id, thread_id_or_0, window_id)
+
+    task_state.on_event(key, payload)
+
+    transitional = _TASK_TRANSITIONAL[op]
+    await _do_send_status_message(bot, user_id, thread_id_or_0, window_id, transitional)
+
+    async def _render() -> None:
+        rendered = task_state.render_list(key)
+        if not rendered:
+            return
+        if task_state.all_completed(key):
+            converted = await _convert_status_to_content(
+                bot, user_id, thread_id_or_0, window_id, rendered
+            )
+            if converted is None:
+                thread_id = thread_id_or_0 if thread_id_or_0 != 0 else None
+                chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+                await rate_limit_send_message(
+                    bot,
+                    chat_id,
+                    rendered,
+                    disable_notification=True,
+                    **_send_kwargs(thread_id, chat_id=chat_id),
+                )
+            task_state.clear(key)
+        else:
+            await _do_send_status_message(
+                bot, user_id, thread_id_or_0, window_id, rendered
+            )
+            task_state.mark_rendered(key)
+
+    task_state.schedule_render(key, _render)
+
+
 async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> None:
     """Process a content message task."""
     window_id = task.window_id or ""
     thread_id = task.thread_id or 0
     chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
+
+    # BRAIN FORK: Task* events (TaskCreate/TaskUpdate/TaskDelete/TaskList)
+    # emit __TASK_EVENT__ markers that feed task_state + debounced renderer.
+    # Do NOT fall through to status/content handling — that would ship the
+    # raw JSON marker into Telegram as text.
+    task_event_part = next(
+        (p for p in task.parts if isinstance(p, str) and p.startswith(_TASK_MARKER)),
+        None,
+    )
+    if task_event_part is not None:
+        await _handle_task_event(bot, user_id, task, task_event_part)
+        return
 
     # BRAIN FORK: status tools (listening..., watching...) -> temp status message
     # Check all parts for __STATUS__ prefix (tool_use and tool_result)

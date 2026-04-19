@@ -501,12 +501,17 @@ async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
         session_manager.clear_window_session(window_id)
         clear_subagents(window_id)
 
+    # BRAIN FORK: drop Task* state for these threads so next session starts
+    # with an empty checklist and any pending debounce timer is cancelled.
+    from .. import task_state
+
     for user_id, thread_id, window_id in users:
         clear_seen_status(window_id)
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
         display = session_manager.get_display_name(window_id)
         await update_topic_emoji(bot, chat_id, thread_id, "done", display)
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+        task_state.clear_for_thread(user_id, thread_id if isinstance(thread_id, int) else 0)
 
 
 async def _handle_task_completed(event: HookEvent, bot: Bot) -> None:

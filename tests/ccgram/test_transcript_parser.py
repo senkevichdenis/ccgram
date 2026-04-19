@@ -252,6 +252,88 @@ class TestTodoRendering:
         assert "TodoRead" not in TranscriptParser.SILENT_TOOLS
 
 
+class TestTaskStarEvents:
+    """BRAIN FORK: Claude Code 2.1.84+ Task* tools emit __TASK_EVENT__ markers."""
+
+    @staticmethod
+    def _parse_marker(result: str) -> dict:
+        import json as _json
+
+        assert result.startswith("__TASK_EVENT__"), (
+            f"expected __TASK_EVENT__ prefix, got {result!r}"
+        )
+        return _json.loads(result[len("__TASK_EVENT__"):])
+
+    def test_task_create_emits_marker_with_fields(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskCreate",
+            {
+                "id": "t1",
+                "subject": "Fix auth bug",
+                "activeForm": "Fixing auth bug",
+                "description": "Detailed description here",
+            },
+        )
+        payload = self._parse_marker(result)
+        assert payload["op"] == "create"
+        assert payload["id"] == "t1"
+        assert payload["subject"] == "Fix auth bug"
+        assert payload["activeForm"] == "Fixing auth bug"
+
+    def test_task_create_accepts_task_id_alias(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskCreate", {"task_id": "abc", "subject": "X"}
+        )
+        payload = self._parse_marker(result)
+        assert payload["op"] == "create"
+        assert payload["id"] == "abc"
+
+    def test_task_create_accepts_taskId_alias(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskCreate", {"taskId": "zzz", "subject": "X"}
+        )
+        payload = self._parse_marker(result)
+        assert payload["id"] == "zzz"
+
+    def test_task_update_emits_marker(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskUpdate", {"id": "t1", "status": "in_progress"}
+        )
+        payload = self._parse_marker(result)
+        assert payload["op"] == "update"
+        assert payload["id"] == "t1"
+        assert payload["status"] == "in_progress"
+
+    def test_task_delete_emits_marker(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskDelete", {"id": "t1"}
+        )
+        payload = self._parse_marker(result)
+        assert payload["op"] == "delete"
+        assert payload["id"] == "t1"
+
+    def test_task_list_emits_marker_without_id(self):
+        result = TranscriptParser.format_tool_use_summary("TaskList", {})
+        payload = self._parse_marker(result)
+        assert payload == {"op": "list"}
+
+    def test_task_create_preserves_cyrillic_in_subject(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskCreate", {"id": "t1", "subject": "Вычитка: priorities.md"}
+        )
+        payload = self._parse_marker(result)
+        assert payload["subject"] == "Вычитка: priorities.md"
+
+    def test_task_create_missing_id_still_emits_marker(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TaskCreate", {"subject": "No id"}
+        )
+        payload = self._parse_marker(result)
+        assert payload["op"] == "create"
+        assert "id" not in payload
+        assert payload["subject"] == "No id"
+
+
 class TestFileToolsAsStatus:
     """BRAIN FORK: Read/Edit/Write/NotebookEdit → temp status (not persistent)."""
 
