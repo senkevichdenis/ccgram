@@ -394,7 +394,16 @@ class TranscriptParser:
         elif name == "Grep":
             summary = input_data.get("pattern", "")
         elif name == "Task":
-            summary = input_data.get("description", "")
+            # BRAIN FORK: Task here is subagent spawn (different from Task*
+            # todo tools in Claude Code 2.1.84+). Show as ephemeral status:
+            # "Subagent: {description}...". Cap at 70 chars to keep the
+            # status message short and readable.
+            description = str(input_data.get("description", "") or "").strip()
+            if not description:
+                return "__STATUS__Thinking..."
+            if len(description) > 70:
+                description = description[:69] + "\u2026"
+            return f"__STATUS__Subagent: {description}..."
         elif name == "WebSearch":
             # BRAIN FORK: present-continuous temp status, matches other
             # ephemeral indicators (Thinking.../Listening.../Creating todo list...)
@@ -469,7 +478,15 @@ class TranscriptParser:
         elif name == "ExitPlanMode":
             summary = ""
         elif name == "Skill":
-            summary = input_data.get("skill", "")
+            # BRAIN FORK: Skill invocation as ephemeral status. Clean the
+            # skill name for readability: hyphens/underscores → spaces,
+            # sentence case (first letter upper, rest lowercase).
+            skill_raw = str(input_data.get("skill", "") or "").strip()
+            if not skill_raw:
+                return "__STATUS__Thinking..."
+            cleaned = skill_raw.replace("-", " ").replace("_", " ")
+            cleaned = cleaned[0].upper() + cleaned[1:].lower()
+            return f"__STATUS__Skill {cleaned}"
         elif name.startswith("mcp__"):
             return cls._format_mcp_tool(name, input_data)
         else:

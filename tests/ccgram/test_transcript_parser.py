@@ -463,6 +463,53 @@ class TestFileToolsAsStatus:
         )
         assert result == "__STATUS__Thinking..."
 
+    def test_skill_simple_name_sentence_case(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Skill", {"skill": "research"}
+        )
+        assert result == "__STATUS__Skill Research"
+
+    def test_skill_hyphenated_name_spaces_and_sentence_case(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Skill", {"skill": "setup-ccgram"}
+        )
+        assert result == "__STATUS__Skill Setup ccgram"
+
+    def test_skill_underscored_and_hyphenated(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Skill", {"skill": "add-task_current"}
+        )
+        assert result == "__STATUS__Skill Add task current"
+
+    def test_skill_empty_falls_back_to_thinking(self):
+        result = TranscriptParser.format_tool_use_summary("Skill", {"skill": ""})
+        assert result == "__STATUS__Thinking..."
+
+    def test_skill_missing_field_falls_back_to_thinking(self):
+        result = TranscriptParser.format_tool_use_summary("Skill", {})
+        assert result == "__STATUS__Thinking..."
+
+    def test_task_subagent_short_description(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Task", {"description": "review security code"}
+        )
+        assert result == "__STATUS__Subagent: review security code..."
+
+    def test_task_subagent_long_description_truncated(self):
+        long = "a" * 100
+        result = TranscriptParser.format_tool_use_summary(
+            "Task", {"description": long}
+        )
+        assert result.startswith("__STATUS__Subagent: ")
+        assert "\u2026" in result
+        assert result.endswith("...")
+
+    def test_task_subagent_empty_description_falls_back(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Task", {"description": ""}
+        )
+        assert result == "__STATUS__Thinking..."
+
     def test_read_generic_basename_no_parent_falls_back(self):
         """Relative path and root-level path with no parent dir must not
         crash and must fall back to bare `SKILL` instead of emitting an
