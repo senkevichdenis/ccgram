@@ -824,11 +824,15 @@ async def _do_send_status_message(
             # Different window — delete old status first
             await _do_clear_status_message(bot, user_id, thread_id_or_0)
 
+    # BRAIN FORK: status messages sent silently — no sound, no push.
+    # Edits later don't trigger notifications; only this first send does
+    # anything, and disable_notification keeps it quiet.
     sent = await rate_limit_send_message(
         bot,
         chat_id,
         text,
         reply_markup=keyboard,
+        disable_notification=True,
         **_send_kwargs(thread_id, chat_id=chat_id),  # type: ignore[arg-type]
     )
     if sent:

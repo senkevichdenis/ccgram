@@ -204,10 +204,38 @@ class TestBashAllThinking:
             "",
         ],
     )
-    def test_every_bash_command_returns_thinking_status(self, command):
+    def test_bash_without_description_returns_thinking_status(self, command):
         result = TranscriptParser.format_tool_use_summary("Bash", {"command": command})
         assert result == "__STATUS__Thinking...", \
             f"Expected __STATUS__Thinking... for {command!r}, got {result!r}"
+
+    def test_bash_with_description_uses_description_as_status(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Bash",
+            {"command": "systemctl --user restart ccgram-den", "description": "Restart ccgram-den"},
+        )
+        assert result == "__STATUS__Restart ccgram-den"
+
+    def test_bash_with_long_description_gets_truncated(self):
+        long_desc = "x" * 100
+        result = TranscriptParser.format_tool_use_summary(
+            "Bash", {"command": "some command", "description": long_desc}
+        )
+        assert result.startswith("__STATUS__")
+        assert result.endswith("…")
+        assert len(result) == len("__STATUS__") + 80
+
+    def test_bash_with_empty_description_falls_back_to_thinking(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Bash", {"command": "ls -la", "description": ""}
+        )
+        assert result == "__STATUS__Thinking..."
+
+    def test_bash_with_whitespace_description_falls_back_to_thinking(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Bash", {"command": "ls -la", "description": "   "}
+        )
+        assert result == "__STATUS__Thinking..."
 
 
 # ── extract_tool_result_text ─────────────────────────────────────────────

@@ -353,13 +353,17 @@ class TranscriptParser:
             # Note: Edit/Update diff and stats are generated in tool_result stage,
             # not here. We just show the tool name and file path.
         elif name == "Bash":
-            # BRAIN FORK: ALL Bash commands -> Thinking... temp status.
-            # Replaces selective hiding from patches 23, 26, 30. User
-            # explicitly requested universal rule: no bash command visible
-            # in chat regardless of type (significant like git push / rm,
-            # internal like ls / cd / cat, or git introspection like
-            # git log / status / diff). Chat stays clean, one persistent
-            # Thinking... visible while bash activity in progress.
+            # BRAIN FORK: ALL Bash commands -> status message temp.
+            # User requested universal rule: no bash command visible.
+            # If the tool call includes a human description (Claude Code
+            # convention — every Bash call has a short description), use
+            # it as the status text for informative display. Otherwise
+            # fall back to generic "Thinking...". Cap at 80 chars.
+            desc = str(input_data.get("description", "") or "").strip()
+            if desc:
+                if len(desc) > 80:
+                    desc = desc[:79] + "…"
+                return f"__STATUS__{desc}"
             return "__STATUS__Thinking..."
         elif name == "Grep":
             summary = input_data.get("pattern", "")
