@@ -177,6 +177,39 @@ class TestFormatToolUseSummary:
         assert result == f"\u26a1 **Bash** `{'x' * 200}\u2026`"
 
 
+
+class TestBashAllThinking:
+    """BRAIN FORK: ALL Bash commands must return __STATUS__Thinking..."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin main",
+            "rm -rf /tmp/foo",
+            "mkdir -p /path",
+            "pnpm build",
+            "docker run hello",
+            "ls -la",
+            "cd /tmp",
+            "cat /etc/hostname",
+            "grep foo bar.txt",
+            "git log --oneline",
+            "git status",
+            "git diff",
+            "cd /home/agent && node script.js",
+            "cd /tmp && pnpm build",
+            "export X=1 && git push",
+            "source .env && ls",
+            "python3 -c 'print(1)'",
+            "",
+        ],
+    )
+    def test_every_bash_command_returns_thinking_status(self, command):
+        result = TranscriptParser.format_tool_use_summary("Bash", {"command": command})
+        assert result == "__STATUS__Thinking...", \
+            f"Expected __STATUS__Thinking... for {command!r}, got {result!r}"
+
+
 # ── extract_tool_result_text ─────────────────────────────────────────────
 
 

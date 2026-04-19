@@ -353,27 +353,14 @@ class TranscriptParser:
             # Note: Edit/Update diff and stats are generated in tool_result stage,
             # not here. We just show the tool name and file path.
         elif name == "Bash":
-            summary = input_data.get("command", "")
-            # BRAIN FORK: parse bash command, hide internal commands
-            if summary:
-                # Split by && and ; to find first meaningful command
-                import re as _re
-                parts_cmd = [p.strip() for p in _re.split(r"&&|;", summary)]
-                skip_prefixes = ("cd ", "export ", "source ", "set ", "unset ")
-                for part in parts_cmd:
-                    if not any(part.startswith(sp) for sp in skip_prefixes):
-                        summary = part
-                        break
-                # Check if first word is a hidden command
-                first_word = summary.split()[0] if summary.split() else ""
-                # Handle "git add" specifically
-                if first_word == "git" and len(summary.split()) > 1:
-                    git_sub = summary.split()[1]
-                    if git_sub in cls._HIDDEN_GIT:
-                        return "__STATUS__Thinking..."
-                elif first_word in cls._HIDDEN_BASH:
-                    return "__STATUS__Thinking..."
-                # For visible bash: show command as-is (short)
+            # BRAIN FORK: ALL Bash commands -> Thinking... temp status.
+            # Replaces selective hiding from patches 23, 26, 30. User
+            # explicitly requested universal rule: no bash command visible
+            # in chat regardless of type (significant like git push / rm,
+            # internal like ls / cd / cat, or git introspection like
+            # git log / status / diff). Chat stays clean, one persistent
+            # Thinking... visible while bash activity in progress.
+            return "__STATUS__Thinking..."
         elif name == "Grep":
             summary = input_data.get("pattern", "")
         elif name == "Task":
