@@ -178,6 +178,80 @@ class TestFormatToolUseSummary:
 
 
 
+class TestTodoRendering:
+    """BRAIN FORK: TodoWrite → status with checklist, TodoRead → Checking tasks."""
+
+    def test_todowrite_all_pending_returns_checklist(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TodoWrite",
+            {
+                "todos": [
+                    {"content": "Fix bug", "status": "pending"},
+                    {"content": "Write tests", "status": "pending"},
+                    {"content": "Commit", "status": "pending"},
+                ]
+            },
+        )
+        assert result.startswith("__STATUS__")
+        assert "Planning tasks" in result
+        assert "[ ] Fix bug" in result
+        assert "[ ] Write tests" in result
+        assert "[ ] Commit" in result
+
+    def test_todowrite_mixed_statuses_renders_correct_icons(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TodoWrite",
+            {
+                "todos": [
+                    {"content": "Done task", "status": "completed"},
+                    {"content": "Active task", "status": "in_progress"},
+                    {"content": "Not started", "status": "pending"},
+                ]
+            },
+        )
+        assert "[x] Done task" in result
+        assert "[~] Active task" in result
+        assert "[ ] Not started" in result
+
+    def test_todowrite_empty_list_falls_back_to_thinking(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TodoWrite", {"todos": []}
+        )
+        assert result == "__STATUS__Thinking..."
+
+    def test_todowrite_missing_field_falls_back_to_thinking(self):
+        result = TranscriptParser.format_tool_use_summary("TodoWrite", {})
+        assert result == "__STATUS__Thinking..."
+
+    def test_todowrite_uses_activeForm_when_content_missing(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TodoWrite",
+            {"todos": [{"activeForm": "Fixing bug", "status": "in_progress"}]},
+        )
+        assert "[~] Fixing bug" in result
+
+    def test_todowrite_truncates_long_items(self):
+        long_content = "x" * 200
+        result = TranscriptParser.format_tool_use_summary(
+            "TodoWrite",
+            {"todos": [{"content": long_content, "status": "pending"}]},
+        )
+        # 80-char cap + ellipsis
+        assert "…" in result
+        # No line exceeds ~85 chars (prefix + 80 + ellipsis)
+        for line in result.split("\n"):
+            assert len(line) <= 95
+
+    def test_todoread_returns_checking_status(self):
+        result = TranscriptParser.format_tool_use_summary("TodoRead", {})
+        assert result == "__STATUS__Checking tasks..."
+
+    def test_silent_tools_no_longer_hides_todowrite(self):
+        # After patch: TodoWrite falls through to custom handler, not hidden
+        assert "TodoWrite" not in TranscriptParser.SILENT_TOOLS
+        assert "TodoRead" not in TranscriptParser.SILENT_TOOLS
+
+
 class TestFileToolsAsStatus:
     """BRAIN FORK: Read/Edit/Write/NotebookEdit → temp status (not persistent)."""
 

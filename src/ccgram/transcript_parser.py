@@ -79,7 +79,10 @@ class TranscriptParser:
     # BRAIN FORK (patch 48): tools that show Thinking... status in Telegram
     THINKING_TOOLS: set[str] = {"ToolSearch", "Grep", "Glob"}
     # BRAIN FORK (patch 48): tools completely hidden (instant, no visible pause)
-    SILENT_TOOLS: set[str] = {"TodoWrite", "TodoRead"}
+    # BRAIN FORK: previously hid TodoWrite/TodoRead entirely. Now rendered
+    # as temp status with checklist (user requested visibility of Fred's
+    # plan + progress). Kept as set for future additions.
+    SILENT_TOOLS: set[str] = set()
 
     # BRAIN FORK (patch 48): dedup consecutive identical tool summaries
     _last_tool_summary: dict[str, str] = {}  # session_id -> last summary text
@@ -373,11 +376,30 @@ class TranscriptParser:
             # BRAIN FORK (patch 48): temporary status, disappears after completion
             return "__STATUS__WebSearch"
         elif name == "TodoWrite":
+            # BRAIN FORK: render as temp status with checklist so user sees
+            # what Fred planned + his progress. Icons: [ ] pending,
+            # [~] in progress, [x] completed. Multi-line status message.
             todos = input_data.get("todos", [])
-            if isinstance(todos, list):
-                summary = f"{len(todos)} item(s)"
+            if not isinstance(todos, list) or not todos:
+                return "__STATUS__Thinking..."
+            _icons = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+            _lines = ["Planning tasks"]
+            for _item in todos:
+                if not isinstance(_item, dict):
+                    continue
+                _content = str(_item.get("content") or _item.get("activeForm") or "").strip()
+                if not _content:
+                    continue
+                _status = _item.get("status", "pending")
+                _icon = _icons.get(_status, "[ ]")
+                if len(_content) > 80:
+                    _content = _content[:79] + "…"
+                _lines.append(f"{_icon} {_content}")
+            if len(_lines) == 1:  # no valid items rendered
+                return "__STATUS__Thinking..."
+            return "__STATUS__" + "\n".join(_lines)
         elif name == "TodoRead":
-            summary = ""
+            return "__STATUS__Checking tasks..."
         elif name == "AskUserQuestion":
             questions = input_data.get("questions", [])
             if isinstance(questions, list) and questions:
