@@ -512,7 +512,11 @@ class TestHandleTeammateIdle:
 
 
 class TestHandleTaskCompleted:
-    async def test_sends_completion_notification(self, monkeypatch) -> None:
+    """BRAIN FORK: TaskCompleted hook is suppressed — our live checklist
+    already renders `[x]` on completion, the extra status notification was
+    only chat noise that flickered the list."""
+
+    async def test_suppressed_no_status_sent(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
             lambda: iter([(100, 42, "@0")]),
@@ -526,11 +530,9 @@ class TestHandleTaskCompleted:
                 data={"task_subject": "write tests", "teammate_name": "coder"},
             )
             await dispatch_hook_event(event, bot)
-            text = mock_enqueue.call_args[0][3]
-            assert "\u2705 Task completed: write tests" in text
-            assert "(by 'coder')" in text
+            mock_enqueue.assert_not_called()
 
-    async def test_no_teammate_name(self, monkeypatch) -> None:
+    async def test_suppressed_without_teammate(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "ccgram.handlers.hook_events.session_manager.iter_thread_bindings",
             lambda: iter([(100, 42, "@0")]),
@@ -544,9 +546,7 @@ class TestHandleTaskCompleted:
                 data={"task_subject": "deploy"},
             )
             await dispatch_hook_event(event, bot)
-            text = mock_enqueue.call_args[0][3]
-            assert "\u2705 Task completed: deploy" in text
-            assert "(by " not in text
+            mock_enqueue.assert_not_called()
 
 
 class TestHandleStopFailure:

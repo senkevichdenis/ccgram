@@ -502,8 +502,10 @@ async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
         clear_subagents(window_id)
 
     # BRAIN FORK: drop Task* state for these threads so next session starts
-    # with an empty checklist and any pending debounce timer is cancelled.
+    # with an empty checklist, pending debounce timers are cancelled, and
+    # the previous list message tracking is released (message stays in chat).
     from .. import task_state
+    from .message_queue import clear_task_list_msg_info
 
     for user_id, thread_id, window_id in users:
         clear_seen_status(window_id)
@@ -511,31 +513,26 @@ async def _handle_session_end(event: HookEvent, bot: Bot) -> None:
         display = session_manager.get_display_name(window_id)
         await update_topic_emoji(bot, chat_id, thread_id, "done", display)
         await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
-        task_state.clear_for_thread(user_id, thread_id if isinstance(thread_id, int) else 0)
+        tid_or_0 = thread_id if isinstance(thread_id, int) else 0
+        task_state.clear_for_thread(user_id, tid_or_0)
+        clear_task_list_msg_info(user_id, tid_or_0)
 
 
 async def _handle_task_completed(event: HookEvent, bot: Bot) -> None:
-    """Handle TaskCompleted — notify topic that a task was completed."""
-    from .message_queue import enqueue_status_update
+    """Handle TaskCompleted — suppressed: todo-list checklist already shows
+    completion status as [x], the extra notification was just chat noise.
 
-    users = _resolve_users_for_window_key(event.window_key)
-    if not users:
-        return
-
+    BRAIN FORK: Fred's per-task completion is rendered via the live
+    checklist in message_queue._handle_task_event (patch 55). Firing a
+    separate "✅ Task completed" status per task caused the list to flicker
+    when many tasks completed in short succession.
+    """
     task_subject = event.data.get("task_subject", "")
-    teammate_name = event.data.get("teammate_name", "")
     logger.info(
-        "Task completed: window_key=%s, task=%s, by=%s",
+        "Task completed (suppressed): window_key=%s, task=%s",
         event.window_key,
         task_subject,
-        teammate_name,
     )
-
-    for user_id, thread_id, window_id in users:
-        text = f"\u2705 Task completed: {task_subject}"
-        if teammate_name:
-            text += f" (by '{teammate_name}')"
-        await enqueue_status_update(bot, user_id, window_id, text, thread_id=thread_id)
 
 
 async def dispatch_hook_event(event: HookEvent, bot: Bot) -> None:

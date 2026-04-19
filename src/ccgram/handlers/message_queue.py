@@ -182,6 +182,11 @@ _tool_msg_ids: dict[tuple[str, int, int], int] = {}
 # Status message tracking: (user_id, thread_id_or_0) -> (message_id, window_id, last_text)
 _status_msg_info: dict[tuple[int, int], tuple[int, str, str]] = {}
 
+# BRAIN FORK: todo-list message tracking — separate slot from status so the
+# list survives Read/Bash/Edit statuses running during task execution.
+# (user_id, thread_id_or_0) -> (message_id, window_id, last_text)
+_task_list_msg_info: dict[tuple[int, int], tuple[int, str, str]] = {}
+
 # Active tool batches: (user_id, thread_id_or_0) -> ToolBatch
 _active_batches: dict[tuple[int, int], ToolBatch] = {}
 
@@ -654,44 +659,141 @@ async def _handle_task_event(
     window_id = task.window_id or ""
     thread_id_or_0 = task.thread_id or 0
     key: task_state.StateKey = (user_id, thread_id_or_0, window_id)
+    list_key = (user_id, thread_id_or_0)
 
     task_state.on_event(key, payload)
 
     # op=assign is silent re-keying after TaskCreate tool_result: state
     # changes (tuid → real id) but no transitional status and no render,
-    # so the currently-shown status stays stable during the burst.
+    # so the currently-shown view stays stable during the burst.
     if op == "assign":
         return
 
+    # Show transitional label: edit the persistent list slot if we already
+    # have one, otherwise use the status slot (list will be promoted to
+    # persistent on first debounce fire).
     transitional = _TASK_TRANSITIONAL[op]
-    await _do_send_status_message(bot, user_id, thread_id_or_0, window_id, transitional)
+    if list_key in _task_list_msg_info:
+        await _edit_task_list_message(
+            bot, user_id, thread_id_or_0, window_id, transitional
+        )
+    else:
+        await _do_send_status_message(
+            bot, user_id, thread_id_or_0, window_id, transitional
+        )
 
     async def _render() -> None:
         rendered = task_state.render_list(key)
         if not rendered:
+            # State became empty (e.g. all deleted). Clean up list msg.
+            _task_list_msg_info.pop(list_key, None)
+            task_state.clear(key)
             return
+
+        await _render_task_list(bot, user_id, thread_id_or_0, window_id, rendered)
+
         if task_state.all_completed(key):
-            converted = await _convert_status_to_content(
-                bot, user_id, thread_id_or_0, window_id, rendered
-            )
-            if converted is None:
-                thread_id = thread_id_or_0 if thread_id_or_0 != 0 else None
-                chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-                await rate_limit_send_message(
-                    bot,
-                    chat_id,
-                    rendered,
-                    disable_notification=True,
-                    **_send_kwargs(thread_id, chat_id=chat_id),
-                )
+            # List becomes a frozen historical message. Drop our tracking
+            # so the next session/burst starts a fresh list.
+            _task_list_msg_info.pop(list_key, None)
             task_state.clear(key)
         else:
-            await _do_send_status_message(
-                bot, user_id, thread_id_or_0, window_id, rendered
-            )
             task_state.mark_rendered(key)
 
     task_state.schedule_render(key, _render)
+
+
+async def _render_task_list(
+    bot: "Bot",
+    user_id: int,
+    thread_id_or_0: int,
+    window_id: str,
+    rendered: str,
+) -> None:
+    """Draw the full todo-list into its dedicated persistent slot.
+
+    1. If we already track a list message for this (user, thread) and it's
+       bound to the same window — edit in place.
+    2. Otherwise try to convert the current status message (the transitional
+       label) into our new persistent list message. Cheap: same message,
+       different content, buttons stripped.
+    3. Otherwise send a fresh message.
+    """
+    list_key = (user_id, thread_id_or_0)
+    thread_id = thread_id_or_0 if thread_id_or_0 != 0 else None
+    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+
+    existing = _task_list_msg_info.get(list_key)
+    if existing:
+        msg_id, stored_wid, last_text = existing
+        if stored_wid == window_id:
+            if rendered == last_text:
+                return
+            success = await edit_with_fallback(
+                bot, chat_id, msg_id, rendered, reply_markup=None
+            )
+            if success:
+                _task_list_msg_info[list_key] = (msg_id, window_id, rendered)
+                return
+            # Edit failed — drop tracking, fall through to create new.
+            _task_list_msg_info.pop(list_key, None)
+        else:
+            # Different window owns the previous list; let it remain in chat
+            # as a historical record, start a new message for this window.
+            _task_list_msg_info.pop(list_key, None)
+
+    converted = await _convert_status_to_content(
+        bot, user_id, thread_id_or_0, window_id, rendered
+    )
+    if converted is not None:
+        _task_list_msg_info[list_key] = (converted, window_id, rendered)
+        return
+
+    sent = await rate_limit_send_message(
+        bot,
+        chat_id,
+        rendered,
+        disable_notification=True,
+        **_send_kwargs(thread_id, chat_id=chat_id),
+    )
+    if sent:
+        _task_list_msg_info[list_key] = (sent.message_id, window_id, rendered)
+
+
+async def _edit_task_list_message(
+    bot: "Bot",
+    user_id: int,
+    thread_id_or_0: int,
+    window_id: str,
+    text: str,
+) -> None:
+    """Edit the tracked list message to show `text` (transitional label)."""
+    list_key = (user_id, thread_id_or_0)
+    existing = _task_list_msg_info.get(list_key)
+    if not existing:
+        return
+    msg_id, stored_wid, last_text = existing
+    if stored_wid != window_id or text == last_text:
+        return
+    thread_id = thread_id_or_0 if thread_id_or_0 != 0 else None
+    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    success = await edit_with_fallback(
+        bot, chat_id, msg_id, text, reply_markup=None
+    )
+    if success:
+        _task_list_msg_info[list_key] = (msg_id, window_id, text)
+    else:
+        _task_list_msg_info.pop(list_key, None)
+
+
+def clear_task_list_msg_info(user_id: int, thread_id: int | None = None) -> None:
+    """Drop tracking for the thread's list message (message itself stays)."""
+    if thread_id is None:
+        keys = [k for k in list(_task_list_msg_info.keys()) if k[0] == user_id]
+    else:
+        keys = [(user_id, thread_id if thread_id is not None else 0)]
+    for k in keys:
+        _task_list_msg_info.pop(k, None)
 
 
 async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> None:
