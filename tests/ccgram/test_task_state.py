@@ -420,3 +420,26 @@ class TestDebounce:
         task_state.schedule_render(KEY, cb)
         task_state.cancel_timer(KEY)
         assert task_state.has_tasks(KEY) is True
+
+    async def test_max_wait_ceiling_forces_render(self, monkeypatch):
+        """Rapid-fire schedule_render calls (always < DEBOUNCE apart) must
+        not starve the first render forever — once MAX_DEBOUNCE_WAIT_SECONDS
+        is exceeded since the burst started, the timer fires immediately.
+        """
+        monkeypatch.setattr(task_state, "DEBOUNCE_SECONDS", 0.2)
+        monkeypatch.setattr(task_state, "MAX_DEBOUNCE_WAIT_SECONDS", 0.3)
+
+        fires: list[int] = []
+
+        async def cb():
+            fires.append(1)
+
+        # Tight burst of 6 reschedules spaced at 0.1s (< DEBOUNCE=0.2s).
+        # Without the ceiling the timer would reset on every call and
+        # never fire. With MAX_WAIT=0.3, it fires around the 4th call.
+        for _ in range(6):
+            task_state.schedule_render(KEY, cb)
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.3)
+
+        assert fires, "timer never fired — starvation ceiling broken"

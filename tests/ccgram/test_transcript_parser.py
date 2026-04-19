@@ -445,6 +445,28 @@ class TestFileToolsAsStatus:
         assert "utils" in result
         assert "src/utils" not in result  # non-generic keeps bare basename
 
+    def test_read_generic_basename_no_parent_falls_back(self):
+        """Relative path and root-level path with no parent dir must not
+        crash and must fall back to bare `SKILL` instead of emitting an
+        empty prefix or a stray `/SKILL`."""
+        # Reset dedup cache — identical results between the two calls
+        # would otherwise collapse the second via _last_tool_summary.
+        TranscriptParser._last_tool_summary.pop("_global", None)
+        result_rel = TranscriptParser.format_tool_use_summary(
+            "Read", {"file_path": "SKILL.md"}
+        )
+        TranscriptParser._last_tool_summary.pop("_global", None)
+        result_root = TranscriptParser.format_tool_use_summary(
+            "Read", {"file_path": "/SKILL.md"}
+        )
+        assert "SKILL" in result_rel
+        assert "SKILL" in result_root
+        # No stray slash or empty prefix
+        assert "/SKILL" not in result_rel
+        for value in (result_rel, result_root):
+            assert "  SKILL" not in value
+            assert not value.endswith("/")
+
 
 class TestBashAllThinking:
     """BRAIN FORK: ALL Bash commands must return __STATUS__Thinking..."""
