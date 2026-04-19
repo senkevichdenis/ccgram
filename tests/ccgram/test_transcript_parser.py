@@ -510,6 +510,116 @@ class TestFileToolsAsStatus:
         )
         assert result == "__STATUS__Thinking..."
 
+    def test_monitor_always_generic(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Monitor", {"target": "ccgram.service"}
+        )
+        assert result == "__STATUS__Monitoring..."
+
+    def test_agent_with_name(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Agent", {"name": "code-reviewer"}
+        )
+        assert result == "__STATUS__Calling agent Code reviewer..."
+
+    def test_agent_subagent_type_fallback(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "Agent", {"subagent_type": "security_auditor"}
+        )
+        assert result == "__STATUS__Calling agent Security auditor..."
+
+    def test_agent_no_name_falls_back(self):
+        result = TranscriptParser.format_tool_use_summary("Agent", {})
+        assert result == "__STATUS__Thinking..."
+
+    def test_teamcreate_with_name(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TeamCreate", {"name": "launch-squad"}
+        )
+        assert result == "__STATUS__Building team Launch squad..."
+
+    def test_teamcreate_team_name_fallback(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TeamCreate", {"team_name": "research_team"}
+        )
+        assert result == "__STATUS__Building team Research team..."
+
+    def test_teamcreate_no_name_falls_back(self):
+        result = TranscriptParser.format_tool_use_summary("TeamCreate", {})
+        assert result == "__STATUS__Thinking..."
+
+    def test_sendmessage_with_to(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "SendMessage", {"to": "code-reviewer"}
+        )
+        assert result == "__STATUS__Messaging Code reviewer..."
+
+    def test_teammatetool_same_handling(self):
+        result = TranscriptParser.format_tool_use_summary(
+            "TeammateTool", {"name": "qa_engineer"}
+        )
+        assert result == "__STATUS__Messaging Qa engineer..."
+
+    def test_sendmessage_no_target(self):
+        result = TranscriptParser.format_tool_use_summary("SendMessage", {})
+        assert result == "__STATUS__Messaging..."
+
+
+class TestMCPToolRendering:
+    """BRAIN FORK: all MCP paths return __STATUS__-prefixed strings so they
+    flow through the temp-status slot. MCP without a tool_descriptions.json
+    entry collapses to Thinking... (matches any-unknown-tool rule)."""
+
+    def test_mcp_without_description_is_thinking(self, monkeypatch):
+        monkeypatch.setattr(TranscriptParser, "_load_tool_descriptions", classmethod(lambda c: {}))
+        result = TranscriptParser.format_tool_use_summary(
+            "mcp__unknown__random_tool", {"anything": "foo"}
+        )
+        assert result == "__STATUS__Thinking..."
+
+    def test_mcp_status_tool_uses_label(self, monkeypatch):
+        monkeypatch.setattr(
+            TranscriptParser, "_load_tool_descriptions",
+            classmethod(lambda c: {
+                "mcp__fred-mcp__transcribe_audio": {
+                    "label": "Listening...", "status": True
+                }
+            }),
+        )
+        result = TranscriptParser.format_tool_use_summary(
+            "mcp__fred-mcp__transcribe_audio", {"path": "/tmp/x.mp3"}
+        )
+        assert result == "__STATUS__Listening..."
+
+    def test_mcp_label_with_param_is_temp_status(self, monkeypatch):
+        monkeypatch.setattr(
+            TranscriptParser, "_load_tool_descriptions",
+            classmethod(lambda c: {
+                "mcp__airtable__list_records": {
+                    "label": "читаю таблицу", "param": "tableId"
+                }
+            }),
+        )
+        result = TranscriptParser.format_tool_use_summary(
+            "mcp__airtable__list_records", {"tableId": "tbl123"}
+        )
+        assert result.startswith("__STATUS__mcp airtable: читаю таблицу")
+
+    def test_mcp_sql_parse_is_temp_status(self, monkeypatch):
+        monkeypatch.setattr(
+            TranscriptParser, "_load_tool_descriptions",
+            classmethod(lambda c: {
+                "mcp__supabase__execute_sql": {
+                    "parse": "sql",
+                    "verbs": {"SELECT": "читаю"},
+                }
+            }),
+        )
+        result = TranscriptParser.format_tool_use_summary(
+            "mcp__supabase__execute_sql", {"query": "SELECT * FROM foo"}
+        )
+        assert result.startswith("__STATUS__mcp supabase: ")
+
     def test_read_generic_basename_no_parent_falls_back(self):
         """Relative path and root-level path with no parent dir must not
         crash and must fall back to bare `SKILL` instead of emitting an

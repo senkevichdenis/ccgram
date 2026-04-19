@@ -106,6 +106,20 @@ class TranscriptParser:
          "config", "settings", "schema", "types"}
     )
 
+    @staticmethod
+    def _clean_tool_name(raw: str) -> str:
+        """Clean a tool-assigned identifier for Telegram display.
+
+        Hyphens and underscores become spaces; the first letter of the
+        whole string is uppercased and the remainder lowercased (sentence
+        case). Used for Skill / Agent / TeamCreate / SendMessage where the
+        raw name is a slug like `code-reviewer` or `add-task_current`.
+        """
+        cleaned = raw.replace("-", " ").replace("_", " ")
+        if not cleaned:
+            return ""
+        return cleaned[0].upper() + cleaned[1:].lower()
+
     # BRAIN FORK: file extension removal for clean display
     @staticmethod
     def _strip_extension(path: str) -> str:
@@ -266,7 +280,13 @@ class TranscriptParser:
 
     @classmethod
     def _format_mcp_tool(cls, name: str, input_data: dict | Any) -> str:
-        """Format MCP tool call into human-readable summary."""
+        """Format MCP tool call into human-readable ephemeral status.
+
+        All returns are __STATUS__-prefixed so MCP calls flow through the
+        temp-status slot (silent, edit-in-place). MCP without an entry in
+        tool_descriptions.json collapses to Thinking... — matches the
+        "any unknown tool → Thinking" rule.
+        """
         descriptions = cls._load_tool_descriptions()
 
         parts = name.split("__")
@@ -279,30 +299,25 @@ class TranscriptParser:
 
         desc = descriptions.get(name)
 
+        # MCP without description → Thinking (like any other unknown tool).
         if desc is None:
-            summary = ""
-            if isinstance(input_data, dict):
-                for v in input_data.values():
-                    if isinstance(v, str) and v:
-                        summary = v[:40] + ("..." if len(v) > 40 else "")
-                        break
-            if summary:
-                return f"mcp {server}: {tool} -- {summary}"
-            return f"mcp {server}: {tool}"
+            return "__STATUS__Thinking..."
 
-        # BRAIN FORK: status tools show as temporary status message (e.g. "listening...")
+        # Status-typed MCP tools (transcribe_audio → Listening..., etc.).
         if desc.get("status"):
             label = desc.get("label", tool)
             return f"__STATUS__{label}"
 
+        # SQL MCP: parse verb from the query text.
         if desc.get("parse") == "sql" and isinstance(input_data, dict):
             query = input_data.get("query", "")
             if query:
                 verbs = desc.get("verbs", {})
                 sql_summary = cls._parse_sql_summary(query, verbs)
-                return f"mcp {server}: {sql_summary}"
-            return f"mcp {server}: execute_sql"
+                return f"__STATUS__mcp {server}: {sql_summary}"
+            return f"__STATUS__mcp {server}: execute_sql"
 
+        # Generic MCP with label (+ optional param).
         label = desc.get("label", tool)
         param_name = desc.get("param")
 
@@ -315,10 +330,10 @@ class TranscriptParser:
                 elif len(param_value) > 50:
                     param_value = param_value[:47] + "..."
                 if desc.get("no_quotes"):
-                    return f"mcp {server}: {label} {param_value}"
-                return f'mcp {server}: {label} "{param_value}"'
+                    return f"__STATUS__mcp {server}: {label} {param_value}"
+                return f'__STATUS__mcp {server}: {label} "{param_value}"'
 
-        return f"mcp {server}: {label}"
+        return f"__STATUS__mcp {server}: {label}"
 
     @classmethod
     def format_tool_use_summary(
@@ -478,15 +493,41 @@ class TranscriptParser:
         elif name == "ExitPlanMode":
             summary = ""
         elif name == "Skill":
-            # BRAIN FORK: Skill invocation as ephemeral status. Clean the
-            # skill name for readability: hyphens/underscores → spaces,
-            # sentence case (first letter upper, rest lowercase).
             skill_raw = str(input_data.get("skill", "") or "").strip()
             if not skill_raw:
                 return "__STATUS__Thinking..."
-            cleaned = skill_raw.replace("-", " ").replace("_", " ")
-            cleaned = cleaned[0].upper() + cleaned[1:].lower()
-            return f"__STATUS__Skill {cleaned}"
+            return f"__STATUS__Skill {cls._clean_tool_name(skill_raw)}"
+        elif name == "Monitor":
+            # BRAIN FORK: team-coordination tool — show short activity hint.
+            return "__STATUS__Monitoring..."
+        elif name == "Agent":
+            agent_raw = str(
+                input_data.get("name", "")
+                or input_data.get("subagent_type", "")
+                or ""
+            ).strip()
+            if not agent_raw:
+                return "__STATUS__Thinking..."
+            return f"__STATUS__Calling agent {cls._clean_tool_name(agent_raw)}..."
+        elif name == "TeamCreate":
+            team_raw = str(
+                input_data.get("name", "")
+                or input_data.get("team_name", "")
+                or ""
+            ).strip()
+            if not team_raw:
+                return "__STATUS__Thinking..."
+            return f"__STATUS__Building team {cls._clean_tool_name(team_raw)}..."
+        elif name in ("TeammateTool", "SendMessage"):
+            to_raw = str(
+                input_data.get("to", "")
+                or input_data.get("name", "")
+                or input_data.get("team_name", "")
+                or ""
+            ).strip()
+            if not to_raw:
+                return "__STATUS__Messaging..."
+            return f"__STATUS__Messaging {cls._clean_tool_name(to_raw)}..."
         elif name.startswith("mcp__"):
             return cls._format_mcp_tool(name, input_data)
         else:
