@@ -308,14 +308,18 @@ class TranscriptParser:
             label = desc.get("label", tool)
             return f"__STATUS__{label}"
 
+        # BRAIN FORK 2026-04-19: drop the `mcp {server}:` prefix from user-
+        # facing output. The label is curated per-tool in tool_descriptions
+        # and reads cleanly on its own. Server name adds noise.
+
         # SQL MCP: parse verb from the query text.
         if desc.get("parse") == "sql" and isinstance(input_data, dict):
             query = input_data.get("query", "")
             if query:
                 verbs = desc.get("verbs", {})
                 sql_summary = cls._parse_sql_summary(query, verbs)
-                return f"__STATUS__mcp {server}: {sql_summary}"
-            return f"__STATUS__mcp {server}: execute_sql"
+                return f"__STATUS__{sql_summary}"
+            return "__STATUS__execute_sql"
 
         # Generic MCP with label (+ optional param).
         label = desc.get("label", tool)
@@ -330,10 +334,10 @@ class TranscriptParser:
                 elif len(param_value) > 50:
                     param_value = param_value[:47] + "..."
                 if desc.get("no_quotes"):
-                    return f"__STATUS__mcp {server}: {label} {param_value}"
-                return f'__STATUS__mcp {server}: {label} "{param_value}"'
+                    return f"__STATUS__{label} {param_value}"
+                return f'__STATUS__{label} "{param_value}"'
 
-        return f"__STATUS__mcp {server}: {label}"
+        return f"__STATUS__{label}"
 
     @classmethod
     def format_tool_use_summary(

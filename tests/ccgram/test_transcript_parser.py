@@ -603,7 +603,10 @@ class TestMCPToolRendering:
         result = TranscriptParser.format_tool_use_summary(
             "mcp__airtable__list_records", {"tableId": "tbl123"}
         )
-        assert result.startswith("__STATUS__mcp airtable: читаю таблицу")
+        # BRAIN FORK: no more `mcp server:` prefix — bare label only
+        assert result.startswith("__STATUS__читаю таблицу")
+        assert "mcp " not in result
+        assert "airtable" not in result
 
     def test_mcp_sql_parse_is_temp_status(self, monkeypatch):
         monkeypatch.setattr(
@@ -618,7 +621,10 @@ class TestMCPToolRendering:
         result = TranscriptParser.format_tool_use_summary(
             "mcp__supabase__execute_sql", {"query": "SELECT * FROM foo"}
         )
-        assert result.startswith("__STATUS__mcp supabase: ")
+        assert result.startswith("__STATUS__")
+        assert "mcp " not in result
+        assert "supabase" not in result
+        assert "читаю" in result  # SQL verb
 
     def test_read_generic_basename_no_parent_falls_back(self):
         """Relative path and root-level path with no parent dir must not
