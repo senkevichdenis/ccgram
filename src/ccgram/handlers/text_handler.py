@@ -30,7 +30,13 @@ from .directory_browser import (
     clear_browse_state,
     clear_window_picker_state,
 )
-from .interactive_ui import get_interactive_window, handle_interactive_ui
+from .interactive_ui import (
+    AMEND_IKEY_KEY,
+    STATE_AMENDING_ANSWER,
+    finalize_interactive_msg,
+    get_interactive_window,
+    handle_interactive_ui,
+)
 from .message_queue import enqueue_status_update
 from .message_sender import (
     ack_reaction,
@@ -536,6 +542,21 @@ async def handle_text_message(
     # UI guards (window picker / directory browser active)
     if await _check_ui_guards(context.user_data, thread_id, message):
         return
+
+    # BRAIN FORK (patch 59): intercept "Your own answer" free-text reply.
+    # User clicked "Your own answer" → Tab sent to tmux → amend-mode flag set.
+    # Next text message finalizes the interactive message with "Selected: <text>",
+    # then falls through so the text still reaches Fred's TUI amend mode.
+    if context.user_data and context.user_data.get(STATE_KEY) == STATE_AMENDING_ANSWER:
+        amend_ikey = context.user_data.pop(AMEND_IKEY_KEY, None)
+        context.user_data.pop(STATE_KEY, None)
+        if amend_ikey:
+            await finalize_interactive_msg(
+                user_id=amend_ikey[0],
+                bot=context.bot,
+                thread_id=amend_ikey[1] or None,
+                result=f"Selected: {text}",
+            )
 
     # Must be in a named topic
     if thread_id is None:

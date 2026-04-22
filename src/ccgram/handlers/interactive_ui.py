@@ -26,6 +26,7 @@ from ..providers import get_provider_for_window
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from .callback_data import (
+    CB_ASK_AMEND,
     CB_ASK_DOWN,
     CB_ASK_ENTER,
     CB_ASK_ESC,
@@ -62,6 +63,15 @@ _send_fail_counts: dict[tuple[int, int], int] = {}  # BRAIN FORK: retry limit fo
 _MAX_INTERACTIVE_RETRIES = 5  # auto-accept after 5 failed send attempts
 _SEND_RETRY_INTERVAL = 5.0  # seconds between retries for failed sends
 _DEAD_TOPIC_RETRY_INTERVAL = 60.0  # longer backoff when topic is deleted
+
+# BRAIN FORK (patch 59): per-message state for edit-in-place finalize flow
+_interactive_options: dict[tuple[int, int], list[str]] = {}  # option labels for echo
+_interactive_texts: dict[tuple[int, int], str] = {}  # original question text (for edit)
+_interactive_ui_names: dict[tuple[int, int], str] = {}  # ui_name (e.g. "AskUserQuestion")
+
+# BRAIN FORK (patch 59): user_data keys for "Your own answer" amend flow
+STATE_AMENDING_ANSWER = "amending_answer"
+AMEND_IKEY_KEY = "amend_ikey"
 
 
 def get_interactive_window(user_id: int, thread_id: int | None = None) -> str | None:
@@ -243,12 +253,16 @@ CB_OPTION = "opt:"  # opt:{window_id}:{option_index}
 
 def _build_clean_ui(
     raw_text: str, window_id: str, ui_name: str
-) -> tuple[str, InlineKeyboardMarkup]:
+) -> tuple[str, InlineKeyboardMarkup, list[str]]:
     """BRAIN FORK: parse interactive UI text, build clean message + option buttons.
 
     Two formats:
     - Numbered options (1. Yes / 2. No): clean buttons, one per option
     - Checkbox options (☐/✔/☒): navigation keyboard (Space to toggle, Enter to confirm)
+
+    Returns (message_text, keyboard, option_labels).  ``option_labels`` is the
+    ordered list of raw labels — callbacks echo ``Selected: {label}`` after
+    patch 59.  Empty for checkbox UIs where selection happens via Space/Enter.
     """
     lines = raw_text.strip().split("\n")
 
@@ -275,7 +289,7 @@ def _build_clean_ui(
                 InlineKeyboardButton("Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64]),
             ],
         ]
-        return text, InlineKeyboardMarkup(rows)
+        return text, InlineKeyboardMarkup(rows), []
 
     # Numbered options: parse and build clean buttons
     options = []
@@ -299,10 +313,12 @@ def _build_clean_ui(
 
     # Buttons: one per option, no numbering
     rows = []
+    option_labels: list[str] = []
     for idx, (num, label) in enumerate(options):
         short_label = label if len(label) <= 45 else label[:42] + "..."
         cb_data = f"{CB_OPTION}{window_id}:{idx}"[:64]
         rows.append([InlineKeyboardButton(short_label, callback_data=cb_data)])
+        option_labels.append(label)
 
     if not rows:
         # Fallback: no numbered options found, show Enter/Esc
@@ -313,9 +329,22 @@ def _build_clean_ui(
             ],
         ]
     else:
-        rows.append([InlineKeyboardButton("Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64])])
+        # BRAIN FORK (patch 59): AskUserQuestion supports free-text via Tab.
+        # Show "Your own answer" alongside Cancel; other numbered UIs get Cancel only.
+        bottom_row = []
+        if ui_name == "AskUserQuestion":
+            bottom_row.append(
+                InlineKeyboardButton(
+                    "Your own answer",
+                    callback_data=f"{CB_ASK_AMEND}{window_id}"[:64],
+                )
+            )
+        bottom_row.append(
+            InlineKeyboardButton("Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64])
+        )
+        rows.append(bottom_row)
 
-    return question, InlineKeyboardMarkup(rows)
+    return question, InlineKeyboardMarkup(rows), option_labels
 
 
 async def handle_interactive_ui(
@@ -457,18 +486,21 @@ async def handle_interactive_ui(
     # BRAIN FORK: clean UI -- parse options, build simple buttons (patch 7 revised)
     ikey = (user_id, thread_id or 0)
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-    clean_msg, keyboard = _build_clean_ui(text, window_id, ui_name)
+    clean_msg, keyboard, option_labels = _build_clean_ui(text, window_id, ui_name)
     text = clean_msg
 
     # Try editing existing interactive message first
     existing_msg_id = _interactive_msgs.get(ikey)
     if existing_msg_id:
-        return (
-            await _edit_interactive_msg(
-                bot, chat_id, existing_msg_id, text, keyboard, ikey, window_id
-            )
-            or False
+        edited = await _edit_interactive_msg(
+            bot, chat_id, existing_msg_id, text, keyboard, ikey, window_id
         )
+        if edited:
+            # BRAIN FORK (patch 59): refresh state for finalize flow
+            _interactive_texts[ikey] = text
+            _interactive_options[ikey] = option_labels
+            _interactive_ui_names[ikey] = ui_name
+        return edited or False
 
     # Cooldown: prevent rapid retries when sends fail
     now = time.monotonic()
@@ -535,6 +567,10 @@ async def handle_interactive_ui(
         _interactive_mode[ikey] = window_id
         _send_cooldowns.pop(ikey, None)
         _send_fail_counts.pop(ikey, None)  # reset on success
+        # BRAIN FORK (patch 59): store state for finalize flow
+        _interactive_texts[ikey] = text
+        _interactive_options[ikey] = option_labels
+        _interactive_ui_names[ikey] = ui_name
     return sent is not None
 
 
@@ -543,12 +579,21 @@ async def clear_interactive_msg(
     bot: Bot | None = None,
     thread_id: int | None = None,
 ) -> None:
-    """Clear tracked interactive message, delete from chat, and exit interactive mode."""
+    """Clear tracked interactive message, delete from chat, and exit interactive mode.
+
+    Used when the UI auto-dismisses (Fred resolved the prompt himself, terminal
+    redrew without a UI).  For user-driven resolutions use ``finalize_interactive_msg``
+    instead — it edits the message in place with an echo of the choice.
+    """
     ikey = (user_id, thread_id or 0)
     msg_id = _interactive_msgs.pop(ikey, None)
     _interactive_mode.pop(ikey, None)
     _send_cooldowns.pop(ikey, None)
     _send_fail_counts.pop(ikey, None)
+    # BRAIN FORK (patch 59): drop state dicts alongside the msg tracking
+    _interactive_options.pop(ikey, None)
+    _interactive_texts.pop(ikey, None)
+    _interactive_ui_names.pop(ikey, None)
     logger.debug(
         "Clear interactive msg: user=%d, thread=%s, msg_id=%s",
         user_id,
@@ -559,3 +604,112 @@ async def clear_interactive_msg(
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
         with contextlib.suppress(TelegramError):
             await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+
+
+async def finalize_interactive_msg(
+    user_id: int,
+    bot: Bot,
+    thread_id: int | None,
+    result: str,
+) -> None:
+    """BRAIN FORK (patch 59): edit interactive message in place with a result echo.
+
+    Called when the user picks an option, cancels, or submits a free-text
+    answer.  Leaves the original question text visible, appends ``result``
+    on a new line (``Selected: Detailed`` / ``Cancelled`` / ``Selected: <custom text>``),
+    and strips the inline keyboard so the message reads as a closed transcript.
+
+    If no tracked message exists, silently no-ops — the caller does not need
+    to branch on whether finalize is relevant.
+    """
+    ikey = (user_id, thread_id or 0)
+    msg_id = _interactive_msgs.pop(ikey, None)
+    original_text = _interactive_texts.pop(ikey, None)
+    _interactive_options.pop(ikey, None)
+    _interactive_ui_names.pop(ikey, None)
+    _interactive_mode.pop(ikey, None)
+    _send_cooldowns.pop(ikey, None)
+    _send_fail_counts.pop(ikey, None)
+
+    if not msg_id or original_text is None:
+        logger.debug(
+            "Finalize interactive msg skipped (no tracked msg): user=%d thread=%s",
+            user_id, thread_id,
+        )
+        return
+
+    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    final_text = f"{original_text}\n\n{result}"
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text=final_text,
+            reply_markup=None,
+            link_preview_options=NO_LINK_PREVIEW,
+        )
+    except BadRequest as e:
+        if "Message is not modified" in e.message:
+            return
+        logger.warning("Finalize edit failed (fallback to markup strip): %s", e.message)
+        with contextlib.suppress(TelegramError):
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id, message_id=msg_id, reply_markup=None
+            )
+    except TelegramError:
+        logger.warning("Finalize interactive msg failed", exc_info=True)
+
+
+async def enter_amend_mode(
+    user_id: int,
+    bot: Bot,
+    thread_id: int | None,
+    window_id: str,
+) -> bool:
+    """BRAIN FORK (patch 59): edit interactive message into "awaiting free-text" state.
+
+    Keeps the original question text, appends a prompt line telling the user
+    to write their answer as the next message.  Keyboard is reduced to a single
+    Cancel button so the user can back out.
+
+    Does NOT touch ``_interactive_msgs`` / ``_interactive_texts`` — the finalize
+    step (triggered by the user's next text message or by Cancel) needs them.
+
+    Returns True on successful edit.
+    """
+    ikey = (user_id, thread_id or 0)
+    msg_id = _interactive_msgs.get(ikey)
+    original_text = _interactive_texts.get(ikey)
+    if not msg_id or original_text is None:
+        return False
+
+    chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+    prompt_text = (
+        f"{original_text}\n\nType your answer as a next message..."
+    )
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Cancel", callback_data=f"{CB_ASK_ESC}{window_id}"[:64]
+                )
+            ]
+        ]
+    )
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text=prompt_text,
+            reply_markup=keyboard,
+            link_preview_options=NO_LINK_PREVIEW,
+        )
+        return True
+    except BadRequest as e:
+        if "Message is not modified" in e.message:
+            return True
+        logger.warning("Enter amend mode edit failed: %s", e.message)
+        return False
+    except TelegramError:
+        logger.warning("Enter amend mode failed", exc_info=True)
+        return False

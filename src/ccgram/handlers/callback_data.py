@@ -46,6 +46,8 @@ CB_ASK_ESC = "aq:esc:"  # aq:esc:<window>
 CB_ASK_ENTER = "aq:enter:"  # aq:enter:<window>
 CB_ASK_SPACE = "aq:spc:"  # aq:spc:<window>
 CB_ASK_TAB = "aq:tab:"  # aq:tab:<window>
+# BRAIN FORK (patch 59): AskUserQuestion "Your own answer" — send Tab, enter amend mode
+CB_ASK_AMEND = "aq:amd:"  # aq:amd:<window>
 CB_ASK_REFRESH = "aq:ref:"  # aq:ref:<window>
 
 # Sessions dashboard

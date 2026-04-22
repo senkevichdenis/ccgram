@@ -15,6 +15,7 @@ from telegram.ext import ContextTypes
 
 from ..tmux_manager import tmux_manager
 from .callback_data import (
+    CB_ASK_AMEND,
     CB_ASK_DOWN,
     CB_ASK_ENTER,
     CB_ASK_ESC,
@@ -25,7 +26,17 @@ from .callback_data import (
     CB_ASK_TAB,
     CB_ASK_UP,
 )
-from .interactive_ui import CB_OPTION, clear_interactive_msg, handle_interactive_ui
+from .directory_browser import STATE_KEY
+from .interactive_ui import (
+    AMEND_IKEY_KEY,
+    CB_OPTION,
+    STATE_AMENDING_ANSWER,
+    _interactive_options,
+    clear_interactive_msg,
+    enter_amend_mode,
+    finalize_interactive_msg,
+    handle_interactive_ui,
+)
 
 logger = structlog.get_logger()
 
@@ -49,10 +60,11 @@ INTERACTIVE_KEY_LABELS: dict[str, str] = {
     CB_ASK_TAB: "\u21e5 Tab",
 }
 
-# All interactive prefixes (key map + refresh + option)
+# All interactive prefixes (key map + refresh + option + amend)
 INTERACTIVE_PREFIXES: tuple[str, ...] = (
     *INTERACTIVE_KEY_MAP,
     CB_ASK_REFRESH,
+    CB_ASK_AMEND,  # BRAIN FORK (patch 59): "Your own answer" for AskUserQuestion
     CB_OPTION,
 )
 
@@ -121,8 +133,33 @@ async def handle_interactive_callback(
                 await tmux_manager.send_keys(w.window_id, "Down", enter=False, literal=False)
                 await asyncio.sleep(0.1)
             await tmux_manager.send_keys(w.window_id, "Enter", enter=False, literal=False)
-        await clear_interactive_msg(user_id, context.bot, thread_id)
+        # BRAIN FORK (patch 59): edit in place with echo instead of deleting
+        ikey = (user_id, thread_id or 0)
+        labels = _interactive_options.get(ikey, [])
+        label = labels[option_idx] if 0 <= option_idx < len(labels) else ""
+        result = f"Selected: {label}" if label else "Selected"
+        await finalize_interactive_msg(user_id, context.bot, thread_id, result)
         await query.answer("OK")
+    elif cb_prefix == CB_ASK_AMEND:
+        # BRAIN FORK (patch 59): "Your own answer" — send Tab, wait for next text
+        if pane_id:
+            sent = await tmux_manager.send_keys_to_pane(
+                pane_id, "Tab", enter=False, literal=False, window_id=window_id
+            )
+        else:
+            w = await tmux_manager.find_window_by_id(window_id)
+            sent = bool(w) and await tmux_manager.send_keys(
+                w.window_id, "Tab", enter=False, literal=False
+            )
+        if sent:
+            ikey = (user_id, thread_id or 0)
+            if context.user_data is not None:
+                context.user_data[STATE_KEY] = STATE_AMENDING_ANSWER
+                context.user_data[AMEND_IKEY_KEY] = ikey
+            await enter_amend_mode(user_id, context.bot, thread_id, window_id)
+            await query.answer("Type your answer...")
+        else:
+            await query.answer("Tab failed", show_alert=True)
     else:
         tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
         if pane_id:
@@ -140,5 +177,16 @@ async def handle_interactive_callback(
                 context.bot, user_id, window_id, thread_id, pane_id=pane_id
             )
         elif sent and not refresh_ui:
-            await clear_interactive_msg(user_id, context.bot, thread_id)
+            # BRAIN FORK (patch 59): Esc finalizes in place with "Cancelled" echo.
+            # Also clears any stale amend-mode flag so the user can type normally.
+            if cb_prefix == CB_ASK_ESC:
+                if context.user_data is not None:
+                    if context.user_data.get(STATE_KEY) == STATE_AMENDING_ANSWER:
+                        context.user_data.pop(STATE_KEY, None)
+                        context.user_data.pop(AMEND_IKEY_KEY, None)
+                await finalize_interactive_msg(
+                    user_id, context.bot, thread_id, "Cancelled"
+                )
+            else:
+                await clear_interactive_msg(user_id, context.bot, thread_id)
         await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, ""))
