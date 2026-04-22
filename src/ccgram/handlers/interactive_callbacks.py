@@ -26,9 +26,9 @@ from .callback_data import (
     CB_ASK_TAB,
     CB_ASK_UP,
 )
-from .directory_browser import STATE_KEY
 from .interactive_ui import (
     AMEND_IKEY_KEY,
+    AMEND_STATE_KEY,
     CB_OPTION,
     STATE_AMENDING_ANSWER,
     _interactive_options,
@@ -154,7 +154,7 @@ async def handle_interactive_callback(
         if sent:
             ikey = (user_id, thread_id or 0)
             if context.user_data is not None:
-                context.user_data[STATE_KEY] = STATE_AMENDING_ANSWER
+                context.user_data[AMEND_STATE_KEY] = STATE_AMENDING_ANSWER
                 context.user_data[AMEND_IKEY_KEY] = ikey
             await enter_amend_mode(user_id, context.bot, thread_id, window_id)
             await query.answer("Type your answer...")
@@ -181,8 +181,8 @@ async def handle_interactive_callback(
             # Also clears any stale amend-mode flag so the user can type normally.
             if cb_prefix == CB_ASK_ESC:
                 if context.user_data is not None:
-                    if context.user_data.get(STATE_KEY) == STATE_AMENDING_ANSWER:
-                        context.user_data.pop(STATE_KEY, None)
+                    if context.user_data.get(AMEND_STATE_KEY) == STATE_AMENDING_ANSWER:
+                        context.user_data.pop(AMEND_STATE_KEY, None)
                         context.user_data.pop(AMEND_IKEY_KEY, None)
                 await finalize_interactive_msg(
                     user_id, context.bot, thread_id, "Cancelled"

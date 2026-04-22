@@ -32,6 +32,7 @@ from .directory_browser import (
 )
 from .interactive_ui import (
     AMEND_IKEY_KEY,
+    AMEND_STATE_KEY,
     STATE_AMENDING_ANSWER,
     finalize_interactive_msg,
     get_interactive_window,
@@ -547,9 +548,9 @@ async def handle_text_message(
     # User clicked "Your own answer" → Tab sent to tmux → amend-mode flag set.
     # Next text message finalizes the interactive message with "Selected: <text>",
     # then falls through so the text still reaches Fred's TUI amend mode.
-    if context.user_data and context.user_data.get(STATE_KEY) == STATE_AMENDING_ANSWER:
+    if context.user_data and context.user_data.get(AMEND_STATE_KEY) == STATE_AMENDING_ANSWER:
         amend_ikey = context.user_data.pop(AMEND_IKEY_KEY, None)
-        context.user_data.pop(STATE_KEY, None)
+        context.user_data.pop(AMEND_STATE_KEY, None)
         if amend_ikey:
             await finalize_interactive_msg(
                 user_id=amend_ikey[0],

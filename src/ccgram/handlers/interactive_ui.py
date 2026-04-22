@@ -69,8 +69,11 @@ _interactive_options: dict[tuple[int, int], list[str]] = {}  # option labels for
 _interactive_texts: dict[tuple[int, int], str] = {}  # original question text (for edit)
 _interactive_ui_names: dict[tuple[int, int], str] = {}  # ui_name (e.g. "AskUserQuestion")
 
-# BRAIN FORK (patch 59): user_data keys for "Your own answer" amend flow
+# BRAIN FORK (patch 59): user_data keys for "Your own answer" amend flow.
+# AMEND_STATE_KEY is intentionally separate from directory_browser's STATE_KEY ("state")
+# to avoid cross-feature state collisions when both flows are active for the same user.
 STATE_AMENDING_ANSWER = "amending_answer"
+AMEND_STATE_KEY = "amend_state"
 AMEND_IKEY_KEY = "amend_ikey"
 
 
