@@ -32,6 +32,7 @@ from .interactive_ui import (
     CB_OPTION,
     STATE_AMENDING_ANSWER,
     _interactive_options,
+    _interactive_ui_names,
     clear_interactive_msg,
     enter_amend_mode,
     finalize_interactive_msg,
@@ -133,12 +134,17 @@ async def handle_interactive_callback(
                 await tmux_manager.send_keys(w.window_id, "Down", enter=False, literal=False)
                 await asyncio.sleep(0.1)
             await tmux_manager.send_keys(w.window_id, "Enter", enter=False, literal=False)
-        # BRAIN FORK (patch 59): edit in place with echo instead of deleting
+        # BRAIN FORK (patch 59): AskUserQuestion → edit-in-place with "Selected: X" echo.
+        # Any other numbered UI (SelectionUI/RestoreCheckpoint/etc.) → delete as before.
         ikey = (user_id, thread_id or 0)
-        labels = _interactive_options.get(ikey, [])
-        label = labels[option_idx] if 0 <= option_idx < len(labels) else ""
-        result = f"Selected: {label}" if label else "Selected"
-        await finalize_interactive_msg(user_id, context.bot, thread_id, result)
+        ui_name = _interactive_ui_names.get(ikey, "")
+        if ui_name == "AskUserQuestion":
+            labels = _interactive_options.get(ikey, [])
+            label = labels[option_idx] if 0 <= option_idx < len(labels) else ""
+            result = f"Selected: {label}" if label else "Selected"
+            await finalize_interactive_msg(user_id, context.bot, thread_id, result)
+        else:
+            await clear_interactive_msg(user_id, context.bot, thread_id)
         await query.answer("OK")
     elif cb_prefix == CB_ASK_AMEND:
         # BRAIN FORK (patch 59): "Your own answer" — send Tab, wait for next text
@@ -177,16 +183,22 @@ async def handle_interactive_callback(
                 context.bot, user_id, window_id, thread_id, pane_id=pane_id
             )
         elif sent and not refresh_ui:
-            # BRAIN FORK (patch 59): Esc finalizes in place with "Cancelled" echo.
-            # Also clears any stale amend-mode flag so the user can type normally.
+            # BRAIN FORK (patch 59): AskUserQuestion Esc → "Cancelled" echo in place.
+            # ExitPlanMode / PermissionPrompt / others → delete (old behavior).
+            # Always clears stale amend-mode flag (only AskUserQuestion could have set it).
             if cb_prefix == CB_ASK_ESC:
+                ikey = (user_id, thread_id or 0)
+                ui_name = _interactive_ui_names.get(ikey, "")
                 if context.user_data is not None:
                     if context.user_data.get(AMEND_STATE_KEY) == STATE_AMENDING_ANSWER:
                         context.user_data.pop(AMEND_STATE_KEY, None)
                         context.user_data.pop(AMEND_IKEY_KEY, None)
-                await finalize_interactive_msg(
-                    user_id, context.bot, thread_id, "Cancelled"
-                )
+                if ui_name == "AskUserQuestion":
+                    await finalize_interactive_msg(
+                        user_id, context.bot, thread_id, "Cancelled"
+                    )
+                else:
+                    await clear_interactive_msg(user_id, context.bot, thread_id)
             else:
                 await clear_interactive_msg(user_id, context.bot, thread_id)
         await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, ""))
