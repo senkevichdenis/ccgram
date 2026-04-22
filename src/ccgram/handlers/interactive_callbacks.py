@@ -141,7 +141,8 @@ async def handle_interactive_callback(
         if ui_name == "AskUserQuestion":
             labels = _interactive_options.get(ikey, [])
             label = labels[option_idx] if 0 <= option_idx < len(labels) else ""
-            result = f"Selected: {label}" if label else "Selected"
+            # ✓︎ = CHECK MARK with Variation Selector-15 (forces text, not emoji render)
+            result = f"✓︎ Selected: {label}" if label else "✓︎ Selected"
             await finalize_interactive_msg(user_id, context.bot, thread_id, result)
         else:
             await clear_interactive_msg(user_id, context.bot, thread_id)
@@ -194,8 +195,9 @@ async def handle_interactive_callback(
                         context.user_data.pop(AMEND_STATE_KEY, None)
                         context.user_data.pop(AMEND_IKEY_KEY, None)
                 if ui_name == "AskUserQuestion":
+                    # ✕︎ = MULTIPLICATION X with Variation Selector-15 (forces text render)
                     await finalize_interactive_msg(
-                        user_id, context.bot, thread_id, "Cancelled"
+                        user_id, context.bot, thread_id, "✕︎ Cancelled"
                     )
                 else:
                     await clear_interactive_msg(user_id, context.bot, thread_id)

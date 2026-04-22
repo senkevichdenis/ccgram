@@ -307,12 +307,15 @@ def _build_clean_ui(
         elif not options:
             all_pre_option_lines.append(line.strip())
 
-    # Question: last non-empty line before options
-    question = ui_name
-    for line in reversed(all_pre_option_lines):
-        if line:
-            question = line
-            break
+    # Question: preserve full pre-option context, not just the last line.
+    # Trim leading/trailing blank lines but keep internal blank lines as paragraph breaks
+    # so multi-paragraph questions ("Approach A...\n\nApproach B...") stay readable.
+    lines = list(all_pre_option_lines)
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    question = "\n".join(lines) if lines else ui_name
 
     # Buttons: one per option, no numbering
     rows = []
@@ -687,9 +690,7 @@ async def enter_amend_mode(
         return False
 
     chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-    prompt_text = (
-        f"{original_text}\n\nType your answer as a next message..."
-    )
+    prompt_text = f"{original_text}\n\nType your answer below..."
     keyboard = InlineKeyboardMarkup(
         [
             [

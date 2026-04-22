@@ -556,7 +556,7 @@ async def handle_text_message(
                 user_id=amend_ikey[0],
                 bot=context.bot,
                 thread_id=amend_ikey[1] or None,
-                result=f"Selected: {text}",
+                result=f"✓︎ Selected: {text}",
             )
 
     # Must be in a named topic
