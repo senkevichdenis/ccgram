@@ -27,7 +27,7 @@ _PROVIDERS: dict[str, dict[str, str | None]] = {
     },
     "anthropic": {
         "base_url": None,
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-6",
         "api_key_env": "ANTHROPIC_API_KEY",
     },
     "groq": {
