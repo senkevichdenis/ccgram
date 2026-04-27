@@ -25,7 +25,7 @@ from datetime import datetime as _diary_datetime
 _diary_background_tasks: set = set()
 _DIARY_LOCK_FILE = "/home/agent/.claude.lock"
 _DIARY_TIMEOUT = 120
-_DIARY_MAX_TURNS = 5
+_DIARY_MAX_TURNS = 15
 
 
 def _get_context_from_ccgram_dir() -> str:
