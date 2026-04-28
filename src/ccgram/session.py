@@ -526,6 +526,35 @@ class SessionManager:
             return
 
         prefix = f"{config.tmux_session_name}:"
+        # Count entries that belong to OUR tmux session — used by the sanity
+        # check below to detect bulk-prune attempts caused by tmux glitches.
+        our_keys = [k for k in raw if k.startswith(prefix)]
+
+        # BRAIN FORK patch 60 (2026-04-28): sanity check #1 — empty live set
+        # while we have multiple entries.  tmux_manager.list_windows() silently
+        # returns [] when get_session() catches an exception (LibTmuxException,
+        # OSError) from libtmux `sessions.get()`. Common causes: race with
+        # respawn-pane -k from restart-claude.sh / proactive-restart.sh, EINTR
+        # on the tmux socket, tmux server briefly unresponsive. Without this
+        # guard, an empty live_window_ids wipes EVERY entry of our context's
+        # session_map in a single tick, which then cascades through
+        # health-check.sh into 9+ sequential restart-claude.sh calls and hits
+        # systemd start-limit. See incident 2026-04-28 11:00 MSK.
+        #
+        # Threshold len>=2: a single legitimate window deletion still passes
+        # through (one entry, empty live set is indistinguishable from tmux
+        # glitch — but the blast radius is one window, not a context-wide
+        # cascade).  This matches existing test
+        # `test_prunes_entry_without_window_state`.
+        if len(our_keys) >= 2 and not live_window_ids:
+            logger.warning(
+                "prune_session_map: skipping suspicious bulk prune — "
+                "live_window_ids empty but session_map has %d entries "
+                "for prefix '%s' (likely tmux glitch / get_session() failed)",
+                len(our_keys), prefix,
+            )
+            return
+
         dead_entries: list[tuple[str, str]] = []  # (map_key, window_id)
         for key in raw:
             if not key.startswith(prefix):

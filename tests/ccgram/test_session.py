@@ -349,6 +349,70 @@ class TestPruneSessionMap:
         result = json.loads(session_map_file.read_text())
         assert "ccgram:@5" not in result
 
+    def test_skips_bulk_prune_when_live_set_empty(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        """BRAIN FORK patch 60: empty live set + multiple entries = skip.
+
+        Reproduces the 2026-04-28 11:00 MSK incident: tmux briefly returned
+        an empty window list during a respawn-pane race; without this guard
+        prune_session_map wiped all 10 business: entries at once.
+        """
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@1": {"session_id": "sid-1", "cwd": "/a"},
+                    "ccgram:@2": {"session_id": "sid-2", "cwd": "/b"},
+                    "ccgram:@3": {"session_id": "sid-3", "cwd": "/c"},
+                }
+            )
+        )
+
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        mgr.prune_session_map(live_window_ids=set())
+
+        # All three entries must survive — sanity check fired because
+        # len(our_keys) >= 2 AND live_window_ids is empty.
+        result = json.loads(session_map_file.read_text())
+        assert "ccgram:@1" in result
+        assert "ccgram:@2" in result
+        assert "ccgram:@3" in result
+
+    def test_bulk_prune_skip_does_not_affect_other_prefixes(
+        self, mgr: SessionManager, tmp_path, monkeypatch
+    ) -> None:
+        """Only entries matching tmux_session_name prefix count toward sanity.
+
+        If our prefix has 1 entry and another prefix has 5, sanity check #1
+        does NOT fire (our_keys=1<2), so the legit single-window prune path
+        is preserved.
+        """
+        session_map_file = tmp_path / "session_map.json"
+        session_map_file.write_text(
+            json.dumps(
+                {
+                    "ccgram:@1": {"session_id": "sid-1", "cwd": "/a"},
+                    "other:@2": {"session_id": "sid-2", "cwd": "/b"},
+                    "other:@3": {"session_id": "sid-3", "cwd": "/c"},
+                }
+            )
+        )
+
+        monkeypatch.setattr("ccgram.session.config.session_map_file", session_map_file)
+        monkeypatch.setattr("ccgram.session.config.tmux_session_name", "ccgram")
+
+        mgr.prune_session_map(live_window_ids=set())
+
+        # ccgram:@1 should be removed (single-window legit case).
+        # other:@2 and other:@3 untouched (different prefix).
+        result = json.loads(session_map_file.read_text())
+        assert "ccgram:@1" not in result
+        assert "other:@2" in result
+        assert "other:@3" in result
+
 
 class TestWindowStateProviderName:
     def test_default_provider_name_is_empty(self) -> None:
