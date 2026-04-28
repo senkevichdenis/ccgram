@@ -26,6 +26,7 @@ Key components:
 
 import asyncio
 import contextlib
+import json
 import structlog
 import time
 from dataclasses import dataclass, field
@@ -954,6 +955,33 @@ async def _handle_dead_window_notification(
     display = session_manager.get_display_name(wid)
     await update_topic_emoji(bot, chat_id, thread_id, "dead", display)
     _start_autoclose_timer(user_id, thread_id, "dead", time.monotonic())
+
+    # BRAIN FORK patch 61 (2026-04-28): skip the Telegram recovery alert when
+    # this thread has a topic_presets.json entry. In Brain every working topic
+    # is preset-bound: when the next user message arrives, text_handler's
+    # auto-bind path (BRAIN FORK patch 16) creates a fresh window from the
+    # preset and rebinds the thread silently. The Fresh/Continue/Resume/Cancel
+    # buttons that vanilla ccgram emits here are vanilla-UX that nobody uses
+    # in Brain \u2014 they accumulate as unread noise in topics. This guard keeps
+    # the upstream code path intact for non-preset topics (DM already short-
+    # circuits at the top of the function); only preset-bound topics short-
+    # circuit here. The diagnostic side effects above (clear tool ids, clear
+    # Thinking status, dead emoji, autoclose timer, _dead_notified set entry
+    # below) all still run, so observability is not lost.
+    try:
+        if config.topic_presets_file.exists():
+            with open(config.topic_presets_file) as _pf:
+                _presets_p61 = json.load(_pf)
+            if _presets_p61.get(str(thread_id)):
+                logger.info(
+                    "Dead window %s: preset exists for thread %d \u2014 skipping "
+                    "Telegram recovery alert (auto-bind will recreate on next message)",
+                    wid, thread_id,
+                )
+                _dead_notified.add(dead_key)
+                return
+    except (ValueError, OSError) as _e:
+        logger.debug("patch 61 preset check failed (%s) \u2014 falling back to vanilla alert", _e)
 
     window_state = session_manager.get_window_state(wid)
     cwd = window_state.cwd or ""

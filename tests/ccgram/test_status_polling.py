@@ -1595,6 +1595,141 @@ class TestMaybeDiscoverTranscript:
         )
 
 
+class TestDeadWindowNotificationPresetSkip:
+    """BRAIN FORK patch 61: skip Telegram recovery alert when topic_presets has
+    an entry for this thread_id. Auto-bind will recreate the window on next
+    user message; the Fresh/Continue/Resume/Cancel buttons are unused noise
+    in Brain so we silently swallow the alert.
+    """
+
+    async def test_preset_present_skips_telegram_send(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """When preset for thread_id exists, rate_limit_send_message must NOT
+        be called and _dead_notified must still be populated (so the dead
+        window state is recorded even though the user sees nothing)."""
+        presets = tmp_path / "topic_presets.json"
+        presets.write_text(
+            '{"42": {"path": "/tmp/proj", "provider": "claude", "mode": "yolo"}}'
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.status_polling.config.topic_presets_file", presets
+        )
+
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch(
+                "ccgram.handlers.status_polling.rate_limit_send_message",
+                new_callable=AsyncMock,
+            ) as mock_send,
+            patch(
+                "ccgram.handlers.status_polling.update_topic_emoji",
+                new_callable=AsyncMock,
+            ) as mock_emoji,
+            patch(
+                "ccgram.handlers.status_polling.enqueue_status_update",
+                new_callable=AsyncMock,
+            ) as mock_status,
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_sm.get_display_name.return_value = "test"
+            mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp/proj", is_dm=False)
+            await _handle_dead_window_notification(bot, 1, 42, "@5")
+
+        # Telegram send must NOT be called when preset exists
+        mock_send.assert_not_called()
+        # Diagnostic side effects MUST still happen (emoji + Thinking clear)
+        mock_emoji.assert_awaited_once()
+        mock_status.assert_awaited_once()
+        # _dead_notified must be set so we don't retry on next tick
+        assert (1, 42, "@5") in _dead_notified
+
+    async def test_no_preset_falls_back_to_vanilla_alert(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Without preset for this thread, the vanilla recovery alert path runs
+        (rate_limit_send_message called). Different thread_id in presets does
+        not match — must still send.
+        """
+        presets = tmp_path / "topic_presets.json"
+        presets.write_text(
+            '{"99": {"path": "/tmp/other", "provider": "claude", "mode": "yolo"}}'
+        )
+        monkeypatch.setattr(
+            "ccgram.handlers.status_polling.config.topic_presets_file", presets
+        )
+
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch(
+                "ccgram.handlers.status_polling.rate_limit_send_message",
+                new_callable=AsyncMock,
+            ) as mock_send,
+            patch(
+                "ccgram.handlers.status_polling.update_topic_emoji",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.build_recovery_keyboard",
+                return_value=None,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_sm.get_display_name.return_value = "test"
+            mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp/proj", is_dm=False)
+            await _handle_dead_window_notification(bot, 1, 33, "@7")
+
+        # 33 not in presets (only 99 is) — vanilla alert must fire
+        mock_send.assert_awaited_once()
+
+    async def test_missing_presets_file_falls_back(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """If topic_presets.json doesn't exist at all (vanilla setup), fall
+        back to vanilla alert path — preserves upstream behavior for non-Brain
+        installations.
+        """
+        missing = tmp_path / "does_not_exist.json"
+        monkeypatch.setattr(
+            "ccgram.handlers.status_polling.config.topic_presets_file", missing
+        )
+
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch("ccgram.handlers.status_polling.session_manager") as mock_sm,
+            patch(
+                "ccgram.handlers.status_polling.rate_limit_send_message",
+                new_callable=AsyncMock,
+            ) as mock_send,
+            patch(
+                "ccgram.handlers.status_polling.update_topic_emoji",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.build_recovery_keyboard",
+                return_value=None,
+            ),
+            patch(
+                "ccgram.handlers.status_polling.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            mock_sm.resolve_chat_id.return_value = -100
+            mock_sm.get_display_name.return_value = "test"
+            mock_sm.get_window_state.return_value = MagicMock(cwd="/tmp/proj", is_dm=False)
+            await _handle_dead_window_notification(bot, 1, 50, "@9")
+
+        mock_send.assert_awaited_once()
+
+
 class TestDeadWindowNotification:
     async def test_marks_notified_even_when_send_fails(self) -> None:
         """When rate_limit_send_message returns None (send fails),
