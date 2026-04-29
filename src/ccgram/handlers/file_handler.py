@@ -193,6 +193,14 @@ async def _upload_and_notify(
 ) -> None:
     """Shared upload flow: resolve dir, download, notify Claude, reply to user."""
     window_id, upload_path, error = _resolve_upload_dir(user_id, thread_id)
+    if error == "No session bound to this topic.":
+        # BRAIN FORK (file_handler unblock): try auto-bind from preset before
+        # giving up. Mirrors text_handler behaviour so first voice/photo/file
+        # in a new preset-backed topic creates the window instead of dropping.
+        from .text_handler import auto_bind_window_for_preset
+        bound_wid = await auto_bind_window_for_preset(user_id, thread_id, message)
+        if bound_wid:
+            window_id, upload_path, error = _resolve_upload_dir(user_id, thread_id)
     if error or not window_id or not upload_path:
         await safe_reply(message, f"\u274c {error}")
         return

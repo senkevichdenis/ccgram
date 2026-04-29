@@ -180,76 +180,71 @@ async def _check_ui_guards(
 
 
 
-async def _try_auto_bind_from_preset(
+async def auto_bind_window_for_preset(
     user_id: int,
     thread_id: int,
-    text: str,
     message: Message,
-    bot: Bot,
-) -> bool:
-    """Auto-create window and bind topic if a preset exists in topic_presets.json.
+) -> str | None:
+    """BRAIN FORK (file_handler unblock): create+bind window from topic_presets.json
+    WITHOUT forwarding any text. Used by both text_handler (with text forwarding
+    in `_try_auto_bind_from_preset` wrapper) and file_handler (voice/photo/file
+    uploads), so first media in a new preset-backed topic doesn\'t fail with
+    "No session bound to this topic.".
 
-    Returns True if preset was found and window created (handled), False to continue.
+    Returns created window_id on success, None if no preset / preset path
+    invalid / window creation failed.
     """
     import json as _json
 
-    # Already bound? Skip
-    window_id = session_manager.get_window_for_thread(user_id, thread_id)
-    if window_id is not None:
-        return False
+    # Already bound? Caller should not reach here, but be defensive.
+    existing_wid = session_manager.get_window_for_thread(user_id, thread_id)
+    if existing_wid is not None:
+        return existing_wid
 
-    # Load presets
     presets_file = _config.topic_presets_file
     if not presets_file.exists():
-        return False
-
+        return None
     try:
         with open(presets_file) as f:
             presets = _json.load(f)
     except (ValueError, OSError):
-        return False
+        return None
 
     preset = presets.get(str(thread_id))
     if not preset:
-        return False
+        return None
 
     path = preset.get("path", "")
     provider_name = preset.get("provider", "claude")
     approval_mode = preset.get("mode", "yolo")
 
     if not path:
-        return False
+        return None
 
     from pathlib import Path as _Path
     if not _Path(path).is_dir():
         logger.warning("Preset path does not exist: %s (thread=%d)", path, thread_id)
-        return False
+        return None
 
     logger.info(
         "Auto-binding from preset: thread=%d -> %s (provider=%s, mode=%s)",
         thread_id, path, provider_name, approval_mode,
     )
 
-    # BRAIN FORK: no startup message (too fast, flickers)
-    # Just send typing action
     await message.chat.send_action("typing")
 
-    # Create window
     from ccgram.providers import resolve_launch_command
     launch_command = resolve_launch_command(provider_name, approval_mode=approval_mode)
-    # BRAIN FORK (auto-resume): подхватить --resume из session_map если для этого
-    # имени окна на диске сохранён живой transcript (после reboot/OOM/crash).
     from ccgram.session import find_resumable_args_for_path
-    auto_args = find_resumable_args_for_path(path, provider_name)
+    auto_args = find_resumable_args_for_path(path, provider_name, user_id, thread_id)
     success, msg, created_wname, created_wid = await tmux_manager.create_window(
         path, launch_command=launch_command, agent_args=auto_args
     )
     if not success:
         from .message_sender import safe_reply
         await safe_reply(message, f"Failed to create window: {msg}")
-        return True  # handled (with error)
+        return None
 
-    # Set window metadata
     session_manager.update_user_mru(user_id, path)
     window_state = session_manager.get_window_state(created_wid)
     window_state.cwd = path
@@ -257,17 +252,31 @@ async def _try_auto_bind_from_preset(
     session_manager.set_window_approval_mode(created_wid, approval_mode)
     await tmux_manager.stamp_pane_title(created_wid, provider_name)
 
-    # Bind thread FIRST (before prune can delete group_chat_id)
     session_manager.bind_thread(user_id, thread_id, created_wid, window_name=created_wname)
 
-    # Store group chat_id AFTER bind (prune may have deleted it, we re-set)
     chat = message.chat
     if chat.type in ("group", "supergroup"):
         session_manager.set_group_chat_id(user_id, thread_id, chat.id)
 
-    # (startup message removed - typing action only)
+    return created_wid
 
-    # Forward the original message (readiness probe in send_to_window handles waiting)
+
+async def _try_auto_bind_from_preset(
+    user_id: int,
+    thread_id: int,
+    text: str,
+    message: Message,
+    bot: Bot,
+) -> bool:
+    """text_handler entrypoint: auto-bind via preset, then forward the original
+    text into the new window. Thin wrapper over auto_bind_window_for_preset.
+
+    Returns True if preset was found and window created (handled), False to continue.
+    """
+    created_wid = await auto_bind_window_for_preset(user_id, thread_id, message)
+    if created_wid is None:
+        return False
+
     send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
     if not send_ok:
         logger.warning("Failed to forward preset pending text: %s", send_msg)
