@@ -83,6 +83,89 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
     return result
 
 
+
+def find_resumable_args_for_path(path: str, provider_name: str = "claude") -> str:
+    """BRAIN FORK (auto-resume after reboot/OOM): return '--resume <sid>' if
+    session_map.json has a record for the window_name that would be created
+    for this path. Returns empty string if no resumable session found.
+
+    Window name rule must mirror tmux_manager.create_window (line ~1021):
+      final_window_name = window_name if window_name else path.name
+
+    The helper only handles the no-explicit-name case (preset auto-bind,
+    directory picker, DM auto-create) — that's where --resume gets lost.
+    Callers that already pass a resume_id via agent_args (resume_command,
+    recovery_callbacks, restore_command) are unaffected.
+    """
+    from pathlib import Path
+    import json
+    import structlog
+
+    logger = structlog.get_logger()
+
+    try:
+        from ccgram.config import config
+        from ccgram.providers.registry import registry, UnknownProviderError
+        from ccgram.providers import _ensure_registered
+    except ImportError:
+        return ""
+    _ensure_registered()
+
+    sm_file = config.config_dir / "session_map.json"
+    if not sm_file.exists():
+        return ""
+    try:
+        raw = json.loads(sm_file.read_text())
+    except (ValueError, OSError):
+        return ""
+
+    expected_name = Path(path).name or "agent"
+    prefix = f"{config.tmux_session_name}:"
+    candidates: list[tuple[float, str, str]] = []
+    for key, info in raw.items():
+        if not key.startswith(prefix):
+            continue
+        if not isinstance(info, dict):
+            continue
+        if info.get("window_name") != expected_name:
+            continue
+        sid = info.get("session_id", "")
+        tp = info.get("transcript_path", "")
+        if not sid or not tp:
+            continue
+        try:
+            st = Path(tp).stat()
+        except OSError:
+            continue
+        if st.st_size <= 0:
+            continue
+        candidates.append((st.st_mtime, sid, tp))
+
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    _, sid, _tp = candidates[0]
+
+    try:
+        provider = registry.get(provider_name)
+    except (UnknownProviderError, KeyError):
+        try:
+            provider = registry.get("claude")
+        except Exception:
+            return ""
+    try:
+        args = provider.make_launch_args(resume_id=sid)
+    except (ValueError, TypeError) as e:
+        logger.warning("auto_resume: invalid resume_id %s: %s", sid, e)
+        return ""
+
+    if args:
+        logger.info(
+            "auto_resume: resuming %s from session_map (sid=%s)",
+            expected_name, sid,
+        )
+    return args
+
 def parse_emdash_provider(session_name: str) -> str:
     """Extract provider name from emdash session name.
 

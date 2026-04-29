@@ -237,8 +237,12 @@ async def _try_auto_bind_from_preset(
     # Create window
     from ccgram.providers import resolve_launch_command
     launch_command = resolve_launch_command(provider_name, approval_mode=approval_mode)
+    # BRAIN FORK (auto-resume): подхватить --resume из session_map если для этого
+    # имени окна на диске сохранён живой transcript (после reboot/OOM/crash).
+    from ccgram.session import find_resumable_args_for_path
+    auto_args = find_resumable_args_for_path(path, provider_name)
     success, msg, created_wname, created_wid = await tmux_manager.create_window(
-        path, launch_command=launch_command
+        path, launch_command=launch_command, agent_args=auto_args
     )
     if not success:
         from .message_sender import safe_reply
