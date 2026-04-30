@@ -333,8 +333,15 @@ async def generate_settings_local(
     Non-owner in project topic: only current project accessible.
     Non-owner in General/informational: read own projects, no writes anywhere.
     """
+    # Per-context settings: prefer $CLAUDE_CONFIG_DIR (each context has its own
+    # config dir), fall back to <cwd>/.claude only if CLAUDE_CONFIG_DIR is unset.
+    # Writing to a single shared ~/.claude/settings.local.json is wrong: deny
+    # rules from non-owner contexts would leak into the owner's context.
+    _config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    settings_dir = Path(_config_dir) if _config_dir else Path(cwd) / ".claude"
+
     if access.is_owner:
-        settings_path = Path(cwd) / ".claude" / "settings.local.json"
+        settings_path = settings_dir / "settings.local.json"
         if settings_path.exists():
             try:
                 settings_path.unlink()
@@ -424,8 +431,7 @@ async def generate_settings_local(
             seen.add(rule)
             unique_deny.append(rule)
 
-    settings_dir = Path(cwd) / ".claude"
-    settings_dir.mkdir(exist_ok=True)
+    settings_dir.mkdir(parents=True, exist_ok=True)
 
     settings = {"permissions": {"deny": unique_deny}}
 
