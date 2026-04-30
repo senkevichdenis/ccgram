@@ -9,10 +9,33 @@ command after CLI flags have been applied to the environment.
 import logging
 import os
 import signal
+import socket as _socket_module
 import sys
 from types import FrameType
 
 import structlog
+
+
+# BRAIN FORK (force IPv4 to api.telegram.org): when the VPS's IPv6 path to
+# Telegram has working TCP but stalled TLS handshake (observed 2026-04-30),
+# httpx Happy Eyeballs commits to the v6 connection and the request times
+# out. Bot bootstrap (Bot.get_me) hits this on startup and ccgram dies
+# before it can serve any traffic. We monkey-patch getaddrinfo to filter
+# out AAAA records for telegram.org hosts, leaving every other host's
+# resolution behavior untouched. Override via env var
+# CCGRAM_DISABLE_IPV4_FORCE=1 if not needed.
+if os.getenv("CCGRAM_DISABLE_IPV4_FORCE") != "1":
+    _orig_getaddrinfo = _socket_module.getaddrinfo
+
+    def _telegram_ipv4_only_getaddrinfo(host, *args, **kwargs):
+        infos = _orig_getaddrinfo(host, *args, **kwargs)
+        if isinstance(host, str) and "telegram.org" in host.lower():
+            v4_only = [i for i in infos if i[0] == _socket_module.AF_INET]
+            if v4_only:
+                return v4_only
+        return infos
+
+    _socket_module.getaddrinfo = _telegram_ipv4_only_getaddrinfo
 
 # Set by the upgrade handler to trigger os.execv() after run_polling() returns
 _restart_requested = False
