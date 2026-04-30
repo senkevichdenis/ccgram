@@ -197,9 +197,27 @@ async def auto_bind_window_for_preset(
     import json as _json
 
     # Already bound? Caller should not reach here, but be defensive.
+    # BRAIN FORK (stale-binding liveness check): verify the bound window
+    # is still alive in tmux before returning it. Without this, a stale
+    # binding to a dead window (e.g. @2 with empty session_id after
+    # ccgram restart, or a window killed externally) short-circuits the
+    # auto-bind here, and the caller's send_to_window fails silently
+    # via session.py:send_to_window → user's message is lost without UI
+    # feedback. Mirrors the cleanup that _handle_dead_window does for
+    # the no-preset case (text_handler.py:375-388).
     existing_wid = session_manager.get_window_for_thread(user_id, thread_id)
     if existing_wid is not None:
-        return existing_wid
+        live_window = await tmux_manager.find_window_by_id(existing_wid)
+        if live_window is not None:
+            return existing_wid
+        logger.info(
+            "Stale binding detected: user=%d thread=%d -> %s (window dead) — "
+            "unbinding and recreating from preset",
+            user_id, thread_id, existing_wid,
+        )
+        session_manager.unbind_thread(user_id, thread_id)
+        from .status_polling import clear_dead_notification
+        clear_dead_notification(user_id, thread_id)
 
     presets_file = _config.topic_presets_file
     if not presets_file.exists():
