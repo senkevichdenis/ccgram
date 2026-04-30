@@ -421,6 +421,15 @@ async def _handle_stop_failure(event: HookEvent, bot: Bot) -> None:
         error_details,
     )
 
+    # BRAIN FORK (rate_limit silence): при rate_limit не шлём в Telegram (\u26a0 API error
+    # и "Сессия зависла, перезапускаю..."), не инкрементируем counter, не делаем auto-restart.
+    # restart не помогает на API quota — только spam циклом fail → alert → restart → fail.
+    # Active dialogue user → Fred сам ответит через interactive_ui (другой code path, не этот).
+    _err_lower = (str(error) + " " + str(error_details)).lower()
+    if any(m in _err_lower for m in ("rate_limit", "rate limit", "hit your limit", "rate_limit_exceeded", "usage limit", "429")):
+        logger.info("rate_limit detected in StopFailure — suppressing Telegram alert and skipping auto-restart for %s", event.window_key)
+        return
+
     detail = f": {error_details}" if error_details else ""
     text = f"\u26a0 API error — {error}{detail}"
 
