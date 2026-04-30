@@ -1,13 +1,29 @@
-"""Outbound sanitization: filter secrets from agent responses.
+"""Outbound sanitization: filter secrets and harness leaks from agent responses.
 
-Regex-based detection of API keys, tokens, and credentials.
-Replaces matches with [REDACTED].
-
-Rule: sanitize only when group has more than one person
-(ALLOWED_USERS count > 1). Owner-only groups are not filtered.
+Two filter layers:
+1. Secrets (API keys, tokens, credentials) -> [REDACTED]. Group-gated
+   (only active when ALLOWED_USERS > 1; owner-only groups skip secret filter).
+2. Harness leaks (e.g. assistant generating "No response requested." as a full
+   reply when there is no real user task) -> empty string. Always active,
+   even for owner: it is internal noise, not a secret. Returning "" tells
+   the caller (response_builder) the message has no user-visible content.
 """
 
 import re
+
+# Harness-leak patterns: match the ENTIRE message body (after .strip()).
+# These are full-text replies the assistant emits in idle/empty-prompt edge
+# cases. Detected from real ccgram transcripts. Drop the whole message.
+# IMPORTANT: callers must check for empty string after sanitize() and skip
+# delivery, otherwise an empty Telegram message will be attempted.
+_HARNESS_FULL_MATCH = [
+    re.compile(r"^no response requested\.?$", re.IGNORECASE),
+    re.compile(r"^continue from where you left off\.?$", re.IGNORECASE),
+    re.compile(r"^continuing(?:\s+from\s+where\s+i\s+left\s+off)?\.{0,3}$", re.IGNORECASE),
+    re.compile(r"^session\s+(?:was\s+)?paused\.?$", re.IGNORECASE),
+    re.compile(r"^session\s+resumed\.?$", re.IGNORECASE),
+]
+
 
 # Prefix-based patterns (low false positive rate)
 _PATTERNS = [
@@ -47,16 +63,26 @@ _PATTERNS = [
 
 
 def sanitize(text: str, allowed_users_count: int = 1) -> str:
-    """Sanitize text by replacing detected secrets with [REDACTED].
+    """Sanitize outbound text: drop harness-leak phrases, redact secrets.
+
+    Harness filter runs ALWAYS (even owner-only groups); secret filter is
+    group-gated.
 
     Args:
         text: The text to sanitize.
         allowed_users_count: Number of users in ALLOWED_USERS.
-            If 1 (owner only), no filtering is applied.
+            If 1 (owner only), secret-redaction skipped, harness filter still runs.
 
     Returns:
-        Sanitized text.
+        Sanitized text. Empty string means the entire message was a harness
+        leak and should NOT be delivered. Callers must check for "" and skip.
     """
+    # Harness-leak full-match drop (run first; cheap; always active).
+    stripped = text.strip()
+    for pattern in _HARNESS_FULL_MATCH:
+        if pattern.match(stripped):
+            return ""
+
     if allowed_users_count <= 1:
         return text
 

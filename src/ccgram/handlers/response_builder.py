@@ -33,8 +33,12 @@ def build_response_parts(
     """
     text = text.strip()
 
-    # BRAIN FORK: sanitize secrets before sending to Telegram
+    # BRAIN FORK: sanitize secrets + drop harness leaks before Telegram delivery.
+    # sanitize() returns "" when the entire message is a harness phrase
+    # (e.g. assistant emitting "No response requested." with no real content).
     text = sanitize(text, len(config.allowed_users))
+    if not text.strip():
+        return []
 
     # BRAIN FORK: hide hook feedback from chat (internal instructions, not for user)
     if "hook feedback" in text.lower() or "stop hook" in text.lower() or "session hook" in text.lower():
