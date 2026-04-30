@@ -29,7 +29,9 @@ if os.getenv("CCGRAM_DISABLE_IPV4_FORCE") != "1":
 
     def _telegram_ipv4_only_getaddrinfo(host, *args, **kwargs):
         infos = _orig_getaddrinfo(host, *args, **kwargs)
-        if isinstance(host, str) and "telegram.org" in host.lower():
+        # httpx/anyio passes host as bytes — handle both str and bytes
+        host_str = host.decode("ascii", "ignore") if isinstance(host, (bytes, bytearray)) else host
+        if isinstance(host_str, str) and "telegram.org" in host_str.lower():
             v4_only = [i for i in infos if i[0] == _socket_module.AF_INET]
             if v4_only:
                 return v4_only
