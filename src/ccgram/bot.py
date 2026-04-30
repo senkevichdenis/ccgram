@@ -1545,11 +1545,52 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
         logger.info("No active users for session %s", msg.session_id)
         return
 
+    # BRAIN FORK (dedup outbound): when two windows share a session_id (e.g.
+    # claude --resume of the same session in two tmux windows) and both
+    # bindings resolve to the same forum chat+thread, naive iteration would
+    # dispatch the same message twice to the same destination. Track
+    # destinations and only deliver once per (chat_id, thread_id). Read
+    # offsets are still updated for every binding so no user ends up with
+    # a stale read position.
+    seen_destinations: set[tuple[int, int | None]] = set()
+
     for user_id, window_id, thread_id in active_users:
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
             window_id=window_id, session_id=msg.session_id
         )
+
+        # Dedup check (before any side-effects in this iteration).
+        # NOTE: when we suppress a duplicate binding we ALSO skip its
+        # per-binding interactive-mode flag updates (set_interactive_mode /
+        # clear_interactive_msg) and its notification-mode check. This is
+        # acceptable because in the duplicate-destination scenario both
+        # bindings point to the SAME Telegram chat+thread — a single
+        # interactive UI message in that topic covers both users; doubling
+        # the flag updates is what created confusion before. If interactive
+        # state ever needs to be coherent across all bindings, lift those
+        # updates above this dedup gate.
+        chat_id_for_dedup = session_manager.resolve_chat_id(user_id, thread_id)
+        dest_key = (chat_id_for_dedup, thread_id)
+        if dest_key in seen_destinations:
+            logger.warning(
+                "Duplicate dispatch suppressed: session=%s window=%s user=%d "
+                "(chat=%d thread=%s already served by another binding)",
+                msg.session_id, window_id, user_id, chat_id_for_dedup, thread_id,
+            )
+            # Update this user's read offset so their state stays current
+            if msg.is_complete:
+                session = await session_manager.resolve_session_for_window(window_id)
+                if session and session.file_path:
+                    try:
+                        file_size = Path(session.file_path).stat().st_size
+                        session_manager.update_user_window_offset(
+                            user_id, window_id, file_size
+                        )
+                    except OSError:
+                        pass
+            continue
+        seen_destinations.add(dest_key)
         # Check notification mode — skip suppressed messages.
         # All tool_use/tool_result MUST pass through regardless of mode: the message
         # queue edits tool_use messages in-place when tool_result arrives, so filtering

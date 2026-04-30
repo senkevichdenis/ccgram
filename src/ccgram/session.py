@@ -215,6 +215,75 @@ def find_resumable_args_for_path(
         return ""
 
     sid, tp, source = resolved
+
+    # BRAIN FORK (live-sid guard): refuse to resume a session that is already
+    # the active session_id of a LIVE tmux window in this instance. Without
+    # this guard, two windows end up sharing one sid and one transcript file,
+    # which causes (a) cross-thread message leakage and (b) duplicate sends
+    # when both windows resolve to the same forum chat+thread destination.
+    # Triggers when a second user first writes into a topic where the first
+    # user already has a live session — Path 1 has no binding for the new
+    # user, Path 2 finds the first user's session by project name.
+    #
+    # Sources to check for sid-in-use:
+    #   1. state.json/window_states (in-memory cached, may lag hook updates)
+    #   2. session_map.json (hook-written, freshest source of truth)
+    # Both are scanned to close the race where the hook just wrote @14's
+    # session_id but in-memory window_states hasn't reloaded yet.
+    sids_in_use: list[str] = []
+    for wid, w in (state_raw.get("window_states", {}) or {}).items():
+        if not isinstance(w, dict):
+            continue
+        if w.get("session_id") == sid:
+            sids_in_use.append(wid)
+    for k, info in sm_raw.items():
+        if not k.startswith(prefix) or not isinstance(info, dict):
+            continue
+        if info.get("session_id") != sid:
+            continue
+        wid_from_map = k[len(prefix):]
+        if wid_from_map and wid_from_map not in sids_in_use:
+            sids_in_use.append(wid_from_map)
+
+    if sids_in_use:
+        # Cross-check with live tmux. FAIL CLOSED on tmux errors: if we cannot
+        # confirm whether the candidate sid is live or not, refuse the resume
+        # rather than risk a duplicate-send collision. The cost is one missed
+        # reboot-recovery resume in the rare case tmux is briefly unhappy at
+        # exactly the moment of first-message-after-restart — a fresh session
+        # is a much better failure mode than two windows sharing one sid.
+        # (Mirrors the same defensive pattern in prune_session_map.)
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["tmux", "list-windows", "-t", config.tmux_session_name, "-F", "#{window_id}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if res.returncode != 0:
+                logger.warning(
+                    "auto_resume: tmux list-windows rc=%d (stderr=%s) — "
+                    "refusing resume to be safe (sid=%s user=%s topic=%s)",
+                    res.returncode, res.stderr.strip()[:200], sid, user_id, topic_id,
+                )
+                return ""
+            live = set(res.stdout.strip().splitlines())
+        except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+            logger.warning(
+                "auto_resume: tmux list-windows failed (%s) — "
+                "refusing resume to be safe (sid=%s user=%s topic=%s)",
+                e, sid, user_id, topic_id,
+            )
+            return ""
+
+        actually_alive = [w for w in sids_in_use if w in live]
+        if actually_alive:
+            logger.warning(
+                "auto_resume: refusing to share sid=%s (already live in %s) for "
+                "user=%s topic=%s — starting fresh session instead (source: %s)",
+                sid, actually_alive, user_id, topic_id, source,
+            )
+            return ""
+
     try:
         provider = registry.get(provider_name)
     except (UnknownProviderError, KeyError):
