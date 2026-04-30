@@ -200,7 +200,7 @@ async def dm_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         launch_command = resolve_launch_command("claude", approval_mode="yolo")
         # BRAIN FORK (auto-resume): см. text_handler.py
         from ccgram.session import find_resumable_args_for_path
-        auto_args = find_resumable_args_for_path("/home/agent", "claude")
+        auto_args = find_resumable_args_for_path("/home/agent", "claude", user_id, None)
         success, msg, wname, wid = await tmux_manager.create_window(
             "/home/agent", launch_command=launch_command, agent_args=auto_args
         )

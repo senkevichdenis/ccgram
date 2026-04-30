@@ -505,7 +505,10 @@ async def _create_window_and_bind(
 
     # BRAIN FORK (auto-resume): см. text_handler.py
     from ccgram.session import find_resumable_args_for_path
-    auto_args = find_resumable_args_for_path(selected_path, provider_name)
+    _user_obj = update.effective_user
+    _uid = _user_obj.id if _user_obj else None
+    _tid = pending_thread_id
+    auto_args = find_resumable_args_for_path(selected_path, provider_name, _uid, _tid)
     success, message, created_wname, created_wid = await tmux_manager.create_window(
         selected_path, launch_command=launch_command, agent_args=auto_args
     )

@@ -84,18 +84,26 @@ def parse_session_map(raw: dict[str, Any], prefix: str) -> dict[str, dict[str, s
 
 
 
-def find_resumable_args_for_path(path: str, provider_name: str = "claude") -> str:
+def find_resumable_args_for_path(
+    path: str,
+    provider_name: str = "claude",
+    user_id: int | None = None,
+    topic_id: int | None = None,
+) -> str:
     """BRAIN FORK (auto-resume after reboot/OOM): return '--resume <sid>' if
-    session_map.json has a record for the window_name that would be created
-    for this path. Returns empty string if no resumable session found.
+    session_map.json has a record with a live transcript for this user/topic.
 
-    Window name rule must mirror tmux_manager.create_window (line ~1021):
-      final_window_name = window_name if window_name else path.name
+    Resolution order:
+      1. If (user_id, topic_id) provided AND state.json has a binding for
+         them — look up session_map by that window_id (or by display_name
+         from state.window_display_names, which survives stale-id pruning).
+         This is the safe path for shared topics where multiple users have
+         windows with the same display_name (e.g. topic 1 "agent" used
+         by Den, Artem, and 3rd user — name search would pick the wrong one).
+      2. Fallback to name-based search by basename(path) — covers fresh
+         first-touch topics, DM channels, directory-picker selections.
 
-    The helper only handles the no-explicit-name case (preset auto-bind,
-    directory picker, DM auto-create) — that's where --resume gets lost.
-    Callers that already pass a resume_id via agent_args (resume_command,
-    recovery_callbacks, restore_command) are unaffected.
+    Always returns empty string when nothing safe to resume.
     """
     from pathlib import Path
     import json
@@ -115,37 +123,98 @@ def find_resumable_args_for_path(path: str, provider_name: str = "claude") -> st
     if not sm_file.exists():
         return ""
     try:
-        raw = json.loads(sm_file.read_text())
+        sm_raw = json.loads(sm_file.read_text())
     except (ValueError, OSError):
         return ""
 
-    expected_name = Path(path).name or "agent"
+    state_file = config.config_dir / "state.json"
+    state_raw = {}
+    if state_file.exists():
+        try:
+            state_raw = json.loads(state_file.read_text())
+        except (ValueError, OSError):
+            pass
+
     prefix = f"{config.tmux_session_name}:"
-    candidates: list[tuple[float, str, str]] = []
-    for key, info in raw.items():
-        if not key.startswith(prefix):
-            continue
+
+    def _resolve_sid_by_wid(wid: str) -> tuple[str, str] | None:
+        """Return (sid, transcript_path) for wid if session_map has live entry."""
+        info = sm_raw.get(f"{prefix.rstrip(':')}:{wid}") or sm_raw.get(f"{prefix}{wid}")
         if not isinstance(info, dict):
-            continue
-        if info.get("window_name") != expected_name:
-            continue
+            return None
         sid = info.get("session_id", "")
         tp = info.get("transcript_path", "")
         if not sid or not tp:
-            continue
+            return None
         try:
-            st = Path(tp).stat()
+            if Path(tp).stat().st_size <= 0:
+                return None
         except OSError:
-            continue
-        if st.st_size <= 0:
-            continue
-        candidates.append((st.st_mtime, sid, tp))
+            return None
+        return (sid, tp)
 
-    if not candidates:
+    resolved: tuple[str, str, str] | None = None  # (sid, tp, source)
+
+    # Path 1: user/topic-specific lookup via state.json bindings
+    if user_id is not None and topic_id is not None:
+        bindings = state_raw.get("thread_bindings", {}) or {}
+        user_bindings = bindings.get(str(user_id), {}) or {}
+        bound_wid = user_bindings.get(str(topic_id), "")
+        if bound_wid:
+            r = _resolve_sid_by_wid(bound_wid)
+            if r:
+                resolved = (r[0], r[1], f"binding {user_id}:{topic_id}->{bound_wid}")
+
+        # If binding's wid not in session_map directly, try via display_name
+        if resolved is None and bound_wid:
+            display = (state_raw.get("window_display_names", {}) or {}).get(bound_wid, "")
+            if display:
+                for k, info in sm_raw.items():
+                    if not k.startswith(prefix) or not isinstance(info, dict):
+                        continue
+                    if info.get("window_name") != display:
+                        continue
+                    sid = info.get("session_id", "")
+                    tp = info.get("transcript_path", "")
+                    if not sid or not tp:
+                        continue
+                    try:
+                        if Path(tp).stat().st_size <= 0:
+                            continue
+                    except OSError:
+                        continue
+                    resolved = (sid, tp, f"display_name {display} (binding {bound_wid})")
+                    break
+
+    # Path 2: name-based fallback (only if user-specific failed)
+    if resolved is None:
+        expected_name = Path(path).name or "agent"
+        candidates: list[tuple[float, str, str]] = []
+        for key, info in sm_raw.items():
+            if not key.startswith(prefix) or not isinstance(info, dict):
+                continue
+            if info.get("window_name") != expected_name:
+                continue
+            sid = info.get("session_id", "")
+            tp = info.get("transcript_path", "")
+            if not sid or not tp:
+                continue
+            try:
+                st = Path(tp).stat()
+            except OSError:
+                continue
+            if st.st_size <= 0:
+                continue
+            candidates.append((st.st_mtime, sid, tp))
+        if candidates:
+            candidates.sort(reverse=True)
+            mtime, sid, tp = candidates[0]
+            resolved = (sid, tp, f"name {expected_name}")
+
+    if resolved is None:
         return ""
-    candidates.sort(reverse=True)
-    _, sid, _tp = candidates[0]
 
+    sid, tp, source = resolved
     try:
         provider = registry.get(provider_name)
     except (UnknownProviderError, KeyError):
@@ -160,10 +229,7 @@ def find_resumable_args_for_path(path: str, provider_name: str = "claude") -> st
         return ""
 
     if args:
-        logger.info(
-            "auto_resume: resuming %s from session_map (sid=%s)",
-            expected_name, sid,
-        )
+        logger.info("auto_resume: resuming via %s sid=%s", source, sid)
     return args
 
 def parse_emdash_provider(session_name: str) -> str:
