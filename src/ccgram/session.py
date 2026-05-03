@@ -1964,9 +1964,14 @@ class SessionManager:
                 continue
 
             # Claude Code ready indicators
+            # BRAIN FORK 2026-05-03: added "❯" (U+276F) — Claude Code 2.1+
+            # changed the input prompt glyph from ">" to "❯". Without this,
+            # _wait_for_readiness times out 90s on a perfectly idle window
+            # (incident 2026-05-03 18:24, business thread 12 → @1708).
+            # Also added "try " — appears in the suggestion line ("❯ Try ...").
             if any(indicator in last_text for indicator in [
-                ">", "claude>", "what can i help", "how can i help",
-                "waiting for input", "type a message",
+                ">", "❯", "claude>", "what can i help", "how can i help",
+                "waiting for input", "type a message", "try \"",
             ]):
                 return True
 
