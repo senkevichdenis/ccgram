@@ -287,12 +287,20 @@ class TestPruneSessionMap:
 
         mgr.prune_session_map(live_window_ids={"@1"})
 
+        # BRAIN FORK (orphan-preserve, 2026-05-03): dead entries are kept
+        # in session_map with _orphan=True so find_resumable_args can
+        # recover the session for the next user message in the topic.
         result = json.loads(session_map_file.read_text())
         assert "ccgram:@1" in result
-        assert "ccgram:@2" not in result
-        assert "ccgram:@3" not in result
-        assert "other:@9" in result
+        assert result["ccgram:@1"].get("_orphan") is not True  # alive
+        assert "ccgram:@2" in result
+        assert result["ccgram:@2"].get("_orphan") is True  # marked orphan
+        assert "_orphaned_at" in result["ccgram:@2"]
+        assert "ccgram:@3" in result
+        assert result["ccgram:@3"].get("_orphan") is True
+        assert "other:@9" in result  # different prefix untouched
 
+        # window_states still cleared for dead windows (window genuinely gone)
         assert "@1" in mgr.window_states
         assert "@2" not in mgr.window_states
         assert "@3" not in mgr.window_states
@@ -346,8 +354,12 @@ class TestPruneSessionMap:
 
         mgr.prune_session_map(live_window_ids=set())
 
+        # BRAIN FORK (orphan-preserve, 2026-05-03): single dead entry with
+        # empty live set is the legit "one window died" case (anti-bulk
+        # guard threshold is len>=2). Entry is marked orphan, not deleted.
         result = json.loads(session_map_file.read_text())
-        assert "ccgram:@5" not in result
+        assert "ccgram:@5" in result
+        assert result["ccgram:@5"].get("_orphan") is True
 
     def test_skips_bulk_prune_when_live_set_empty(
         self, mgr: SessionManager, tmp_path, monkeypatch
@@ -406,12 +418,16 @@ class TestPruneSessionMap:
 
         mgr.prune_session_map(live_window_ids=set())
 
-        # ccgram:@1 should be removed (single-window legit case).
+        # BRAIN FORK (orphan-preserve, 2026-05-03):
+        # ccgram:@1 marked orphan (single-window legit case, kept for resume).
         # other:@2 and other:@3 untouched (different prefix).
         result = json.loads(session_map_file.read_text())
-        assert "ccgram:@1" not in result
+        assert "ccgram:@1" in result
+        assert result["ccgram:@1"].get("_orphan") is True
         assert "other:@2" in result
+        assert result["other:@2"].get("_orphan") is not True
         assert "other:@3" in result
+        assert result["other:@3"].get("_orphan") is not True
 
 
 class TestWindowStateProviderName:

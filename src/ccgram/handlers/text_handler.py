@@ -295,10 +295,31 @@ async def _try_auto_bind_from_preset(
     if created_wid is None:
         return False
 
-    send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
-    if not send_ok:
-        logger.warning("Failed to forward preset pending text: %s", send_msg)
+    # BRAIN FORK (pending-text retry, 2026-05-03): send_to_window often fails
+    # with "Сессия загружается. Попробуй через минуту." right after a fresh
+    # window is created — claude takes 5-10s to bootstrap. Without retry,
+    # the user's first message after auto-bind is silently dropped (logged
+    # only as warning). Incident 2026-05-03 06:49: Den's message lost.
+    # Retry 3x with 0/2/5s backoff (~7s total), then notify the user.
+    last_err = ""
+    for attempt, delay in enumerate((0.0, 2.0, 5.0), start=1):
+        if delay > 0:
+            await asyncio.sleep(delay)
+        send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
+        if send_ok:
+            return True
+        last_err = send_msg or "unknown error"
+        logger.warning(
+            "Failed to forward preset pending text (attempt %d/3): %s",
+            attempt, last_err,
+        )
 
+    # All retries exhausted — notify the user instead of silently dropping.
+    await safe_reply(
+        message,
+        "⚠ Сессия не успела загрузиться. Сообщение не доставлено: "
+        f"{last_err}\nПовтори через минуту."
+    )
     return True
 
 

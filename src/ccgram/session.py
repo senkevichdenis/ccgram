@@ -24,6 +24,7 @@ Key methods for thread binding access:
 import asyncio
 import fcntl
 import json
+import time
 import structlog
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,18 @@ YOLO_APPROVAL_MODE = "yolo"
 
 BATCH_MODES: frozenset[str] = frozenset({"batched", "verbose"})
 DEFAULT_BATCH_MODE = "batched"
+
+# BRAIN FORK (huge-transcript guard): refuse to --resume transcripts above
+# this size. Claude Code re-loads the entire transcript on resume; transcripts
+# of this size or larger trip the API 200k token cap (incident 2026-05-03 5:50,
+# 6.78 MB transcript caused 3 StopFailures in a row at 206k tokens).
+# 4 MB chosen with ~40% safety margin (~120k tokens at 30k tokens/MB).
+MAX_RESUME_TRANSCRIPT_MB = 4
+
+# BRAIN FORK (orphan-session cleanup): orphan session_map entries kept on
+# disk for find_resumable_args recovery are auto-deleted after this many
+# days to prevent unbounded growth of session_map.json.
+ORPHAN_SESSION_MAX_AGE_DAYS = 7
 
 
 _LEGACY_SESSION_PREFIX = "ccbot:"
@@ -137,6 +150,29 @@ def find_resumable_args_for_path(
 
     prefix = f"{config.tmux_session_name}:"
 
+    max_size = MAX_RESUME_TRANSCRIPT_MB * 1024 * 1024
+
+    def _is_resumable_transcript(tp: str) -> bool:
+        """Return True if transcript file exists, is non-empty, and within
+        the resume size cap. Caps at MAX_RESUME_TRANSCRIPT_MB to avoid the
+        prompt-too-long cascading StopFailure (incident 2026-05-03 5:50,
+        6.78 MB transcript hit 200k token API cap 3 times in a row).
+        """
+        try:
+            st = Path(tp).stat()
+        except OSError:
+            return False
+        if st.st_size <= 0:
+            return False
+        if st.st_size > max_size:
+            logger.warning(
+                "auto_resume: transcript %s is %.1f MB (>%d MB cap), "
+                "refusing resume — fresh session opens instead",
+                tp, st.st_size / 1024 / 1024, MAX_RESUME_TRANSCRIPT_MB,
+            )
+            return False
+        return True
+
     def _resolve_sid_by_wid(wid: str) -> tuple[str, str] | None:
         """Return (sid, transcript_path) for wid if session_map has live entry."""
         info = sm_raw.get(f"{prefix.rstrip(':')}:{wid}") or sm_raw.get(f"{prefix}{wid}")
@@ -146,10 +182,7 @@ def find_resumable_args_for_path(
         tp = info.get("transcript_path", "")
         if not sid or not tp:
             return None
-        try:
-            if Path(tp).stat().st_size <= 0:
-                return None
-        except OSError:
+        if not _is_resumable_transcript(tp):
             return None
         return (sid, tp)
 
@@ -178,10 +211,7 @@ def find_resumable_args_for_path(
                     tp = info.get("transcript_path", "")
                     if not sid or not tp:
                         continue
-                    try:
-                        if Path(tp).stat().st_size <= 0:
-                            continue
-                    except OSError:
+                    if not _is_resumable_transcript(tp):
                         continue
                     resolved = (sid, tp, f"display_name {display} (binding {bound_wid})")
                     break
@@ -189,7 +219,11 @@ def find_resumable_args_for_path(
     # Path 2: name-based fallback (only if user-specific failed)
     if resolved is None:
         expected_name = Path(path).name or "agent"
-        candidates: list[tuple[float, str, str]] = []
+        # Tuple format: (mtime, is_live_first, sid, tp). is_live_first=0 for
+        # live entries, 1 for orphan — sorted reverse so live wins on tie.
+        # (At equal mtime, prefer the actively-bound live session over a
+        # session that has been pruned and is being recovered.)
+        candidates: list[tuple[float, int, str, str]] = []
         for key, info in sm_raw.items():
             if not key.startswith(prefix) or not isinstance(info, dict):
                 continue
@@ -199,16 +233,19 @@ def find_resumable_args_for_path(
             tp = info.get("transcript_path", "")
             if not sid or not tp:
                 continue
+            if not _is_resumable_transcript(tp):
+                continue
             try:
                 st = Path(tp).stat()
             except OSError:
                 continue
-            if st.st_size <= 0:
-                continue
-            candidates.append((st.st_mtime, sid, tp))
+            is_orphan = bool(info.get("_orphan"))
+            # reverse=True later: 0 sorts after 1, so we want live=1, orphan=0
+            live_priority = 0 if is_orphan else 1
+            candidates.append((st.st_mtime, live_priority, sid, tp))
         if candidates:
             candidates.sort(reverse=True)
-            mtime, sid, tp = candidates[0]
+            _mtime, _prio, sid, tp = candidates[0]
             resolved = (sid, tp, f"name {expected_name}")
 
     if resolved is None:
@@ -744,9 +781,15 @@ class SessionManager:
             return
 
         prefix = f"{config.tmux_session_name}:"
-        # Count entries that belong to OUR tmux session — used by the sanity
-        # check below to detect bulk-prune attempts caused by tmux glitches.
-        our_keys = [k for k in raw if k.startswith(prefix)]
+        # Count LIVE entries that belong to OUR tmux session — used by the
+        # sanity check below to detect bulk-prune attempts caused by tmux
+        # glitches. Orphan entries don't count: they're already dead, so
+        # they shouldn't gate the bulk-prune guard threshold.
+        our_keys = [
+            k for k in raw
+            if k.startswith(prefix)
+            and not (isinstance(raw.get(k), dict) and raw[k].get("_orphan"))
+        ]
 
         # BRAIN FORK patch 60 (2026-04-28): sanity check #1 — empty live set
         # while we have multiple entries.  tmux_manager.list_windows() silently
@@ -777,6 +820,12 @@ class SessionManager:
         for key in raw:
             if not key.startswith(prefix):
                 continue
+            entry = raw.get(key)
+            # Skip already-orphaned entries — they are intentionally kept on disk
+            # for find_resumable_args_for_path recovery; cleanup_orphan_sessions
+            # handles their eventual removal by age.
+            if isinstance(entry, dict) and entry.get("_orphan"):
+                continue
             window_id = key[len(prefix) :]
             if self._is_window_id(window_id) and window_id not in live_window_ids:
                 dead_entries.append((key, window_id))
@@ -784,12 +833,29 @@ class SessionManager:
         if not dead_entries:
             return
 
+        # BRAIN FORK (orphan-preserve): mark dead session_map entries as
+        # _orphan instead of deleting them. Reason: when a tmux window dies
+        # (OOM, crash, manual kill), the user's next message in the same
+        # Telegram topic triggers lazy auto-bind via _try_auto_bind_from_preset,
+        # which calls find_resumable_args_for_path to recover the session via
+        # `claude --resume <sid>`. If we delete the record here, find_resumable
+        # has nothing to recover from → fresh empty session → user sees "this
+        # session just started" instead of their preserved diary (incident
+        # 2026-05-03 den-context: 5 dead windows in a row, all spawned fresh
+        # because prune deleted the record before the next message arrived).
+        #
+        # window_states is still cleaned because the window genuinely doesn't
+        # exist in tmux anymore — keeping a stub there would cause the dead
+        # window to be treated as "present" by other consumers.
+        now = time.time()
         changed_state = False
         for key, window_id in dead_entries:
             logger.info(
-                "Pruning dead session_map entry: %s (window %s)", key, window_id
+                "Marking session_map entry as orphan: %s (window %s)",
+                key, window_id,
             )
-            del raw[key]
+            raw[key]["_orphan"] = True
+            raw[key]["_orphaned_at"] = now
             if window_id in self.window_states:
                 del self.window_states[window_id]
                 changed_state = True
@@ -797,6 +863,42 @@ class SessionManager:
         atomic_write_json(config.session_map_file, raw)
         if changed_state:
             self._save_state()
+
+        # Opportunistic cleanup of week-old orphans on every prune cycle.
+        # Cheap (no-op when nothing to clean), avoids needing a separate cron.
+        self.cleanup_orphan_sessions()
+
+    def cleanup_orphan_sessions(self, max_age_days: int = ORPHAN_SESSION_MAX_AGE_DAYS) -> None:
+        """Remove orphan session_map entries older than max_age_days.
+
+        Called periodically (or at startup) to prevent unbounded growth of
+        session_map.json. Recent orphans are kept so users can recover memory
+        from sessions abandoned hours/days ago, but week-old orphans are
+        almost certainly past the 5 MB / 200k-token resume cap anyway.
+        """
+        if not config.session_map_file.exists():
+            return
+        try:
+            raw = json.loads(config.session_map_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return
+
+        cutoff = time.time() - max_age_days * 86400
+        removed: list[str] = []
+        for key in list(raw.keys()):
+            entry = raw.get(key)
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("_orphan") and entry.get("_orphaned_at", 0) < cutoff:
+                del raw[key]
+                removed.append(key)
+
+        if removed:
+            atomic_write_json(config.session_map_file, raw)
+            logger.info(
+                "Cleaned up %d orphan session_map entries older than %d days: %s",
+                len(removed), max_age_days, removed,
+            )
 
     def _get_session_map_window_ids(self) -> set[str]:
         """Read session_map.json and return window IDs tracked by ccgram.
@@ -813,6 +915,11 @@ class SessionManager:
         prefix = f"{config.tmux_session_name}:"
         result: set[str] = set()
         for key in raw:
+            entry = raw.get(key)
+            # Orphan entries are kept on disk for find_resumable_args recovery
+            # but don't count as live windows — exclude them from this set.
+            if isinstance(entry, dict) and entry.get("_orphan"):
+                continue
             if key.startswith(prefix):
                 wid = key[len(prefix) :]
                 if self._is_window_id(wid):
@@ -1080,6 +1187,14 @@ class SessionManager:
         old_format_keys: list[str] = []
         for key, info in session_map.items():
             if not isinstance(info, dict):
+                continue
+
+            # BRAIN FORK (orphan-preserve): orphan entries are kept on disk so
+            # find_resumable_args_for_path can recover the session for the
+            # next user message in this topic. They are NOT live windows —
+            # don't sync them into window_states (would re-create the dead
+            # window as a stub).
+            if info.get("_orphan"):
                 continue
 
             # Emdash entries: use the full key as window_id
