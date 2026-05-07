@@ -1395,19 +1395,27 @@ class SessionManager:
         Always saves state unconditionally. When *cwd* is provided, persists it
         in the same write so provider/cwd updates stay atomic.
 
-        When switching to a hookless provider (e.g. shell), clears any stale
-        session_map.json entry and session_id so hook-based data from a
-        previous provider doesn't cause provider detection flickering.
+        When switching to a hookless provider (e.g. shell), the session_map
+        entry is marked as orphan (NOT deleted) so find_resumable_args_for_path
+        can recover the session via `claude --resume <sid>` if the user returns
+        to the topic. This handles the OOM/crash case where claude died and the
+        pane fell back to bash — preserving conversation memory across the
+        failure (incident 2026-05-07: Errors topic in den ctx, OOM-killed
+        session bfd76f00 was deleted from session_map by this very path,
+        bypassing the orphan-preserve in prune_session_map, causing 17 minutes
+        of work to be unrecoverable when user returned).
         """
         state = self.get_window_state(window_id)
         old_provider = state.provider_name
+        old_session_id = state.session_id  # snapshot for CAS in orphan-mark
         state.provider_name = provider_name
         if cwd:
             state.cwd = cwd
 
         # When switching away from a hook-based provider to a hookless one,
         # clear stale session data that would otherwise cause the poll loop
-        # to re-detect the old provider from session_map.json.
+        # to re-detect the old provider from session_map.json. The session_map
+        # entry itself is preserved (marked orphan) for recovery.
         if old_provider != provider_name and provider_name:
             from .providers import registry
 
@@ -1416,12 +1424,88 @@ class SessionManager:
                 if state.session_id:
                     state.session_id = ""
                     state.transcript_path = ""
-                self._clear_session_map_entry(window_id)
+                self._orphan_session_map_entry(window_id, expected_sid=old_session_id)
 
         self._save_state()
 
+    def _orphan_session_map_entry(
+        self, window_id: str, expected_sid: str = ""
+    ) -> None:
+        """Mark a window's session_map entry as orphan (preserve for recovery).
+
+        Sets `_orphan: True` and `_orphaned_at: <now>` instead of deleting, so
+        `find_resumable_args_for_path` can return `--resume <sid>` when the
+        user returns to the topic. `cleanup_orphan_sessions` removes orphans
+        older than ORPHAN_SESSION_MAX_AGE_DAYS (7 days).
+
+        Concurrency guards:
+        - Idempotent: skip write if entry is already orphan with matching sid
+          (avoids hot-path I/O amplification when status_polling flickers).
+        - CAS on session_id: skip if entry's session_id no longer matches
+          *expected_sid* — a fresh hook write may have raced ahead with a new
+          live session, and stamping orphan on it would silently disable a
+          live session for 7 days.
+
+        Args:
+            window_id: The tmux window_id (e.g. "@3438") to orphan.
+            expected_sid: Session_id we believe should be in session_map. If
+                provided and the actual entry has a different sid, the
+                orphan-mark is skipped. Empty string disables the CAS check.
+        """
+        if not config.session_map_file.exists():
+            return
+        lock_path = config.session_map_file.with_suffix(".lock")
+        try:
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    raw = json.loads(config.session_map_file.read_text())
+                    key = f"{config.tmux_session_name}:{window_id}"
+                    entry = raw.get(key)
+                    if not isinstance(entry, dict):
+                        return
+
+                    entry_sid = entry.get("session_id", "")
+
+                    # CAS: hook beat us with a fresh sid — don't orphan it.
+                    if expected_sid and entry_sid and entry_sid != expected_sid:
+                        logger.debug(
+                            "orphan-mark skipped: sid changed for %s "
+                            "(expected=%s, actual=%s) — hook overwrote",
+                            window_id,
+                            expected_sid[:8],
+                            entry_sid[:8],
+                        )
+                        return
+
+                    # Idempotency: skip if already orphan with same sid.
+                    if entry.get("_orphan") and entry_sid == expected_sid:
+                        return
+
+                    entry["_orphan"] = True
+                    entry["_orphaned_at"] = time.time()
+                    atomic_write_json(config.session_map_file, raw)
+                    logger.info(
+                        "Marked session_map entry orphan for %s (sid=%s)",
+                        window_id,
+                        entry_sid[:8] if entry_sid else "?",
+                    )
+                except (json.JSONDecodeError, OSError):  # fmt: skip
+                    return
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError:
+            logger.debug(
+                "Failed to lock session_map for orphan-mark %s", window_id
+            )
+
     def _clear_session_map_entry(self, window_id: str) -> None:
-        """Remove a window's entry from session_map.json if present."""
+        """Remove a window's entry from session_map.json if present.
+
+        Hard-delete: bypasses the orphan-preserve mechanism. Use only when
+        the session is genuinely no longer recoverable (explicit user kill
+        via /sessions Kill button, or a fully-replaced provider).
+        """
         if not config.session_map_file.exists():
             return
         lock_path = config.session_map_file.with_suffix(".lock")

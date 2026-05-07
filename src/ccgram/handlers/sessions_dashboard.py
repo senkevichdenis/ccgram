@@ -161,6 +161,12 @@ async def handle_sessions_kill_confirm(
     if w:
         await tmux_manager.kill_window(w.window_id)
 
+    # Hard-delete session_map entry so the killed session is NOT auto-resumed
+    # later (orphan-preserve in set_window_provider would otherwise let
+    # find_resumable_args_for_path return --resume <sid> on next message in
+    # the same topic). Explicit kill via UI = user wants this gone permanently.
+    session_manager._clear_session_map_entry(window_id)
+
     # Unbind ALL users bound to this window
     for uid, tid, bound_wid in list(session_manager.iter_thread_bindings()):
         if bound_wid == window_id:
